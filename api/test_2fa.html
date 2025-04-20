@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2FA Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            background-color: #f5f5f5;
+            padding: 20px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        button {
+            padding: 8px 16px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        input, textarea {
+            width: 100%;
+            padding: 8px;
+            margin: 8px 0;
+            box-sizing: border-box;
+        }
+        #result {
+            white-space: pre-wrap;
+            background-color: #f0f0f0;
+            padding: 10px;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <h1>2FA Validation Test</h1>
+    
+    <div class="container">
+        <h2>Generate a Secret</h2>
+        <button id="generateSecret">Generate Random Secret</button>
+        <p>Secret: <span id="secret"></span></p>
+    </div>
+
+    <div class="container">
+        <h2>Generate a Code</h2>
+        <label for="secretForCode">Secret:</label>
+        <input type="text" id="secretForCode" placeholder="Enter the secret here">
+        <button id="generateCode">Generate Code</button>
+        <p>Code: <span id="code"></span></p>
+    </div>
+
+    <div class="container">
+        <h2>Validate a Code</h2>
+        <label for="secretForValidation">Secret:</label>
+        <input type="text" id="secretForValidation" placeholder="Enter the secret here">
+        <label for="codeForValidation">Code:</label>
+        <input type="text" id="codeForValidation" placeholder="Enter the code here">
+        <button id="validateCode">Validate Code</button>
+        <p>Result: <span id="validationResult"></span></p>
+    </div>
+
+    <div class="container">
+        <h2>API Response</h2>
+        <pre id="result">Results will appear here</pre>
+    </div>
+
+    <script>
+        document.getElementById('generateSecret').addEventListener('click', async () => {
+            try {
+                // Generate a random base32 string
+                const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+                let secret = '';
+                for (let i = 0; i < 16; i++) {
+                    secret += characters.charAt(Math.floor(Math.random() * characters.length));
+                }
+                
+                document.getElementById('secret').textContent = secret;
+                document.getElementById('secretForCode').value = secret;
+                document.getElementById('secretForValidation').value = secret;
+                
+                document.getElementById('result').textContent = `Generated secret: ${secret}`;
+            } catch (error) {
+                document.getElementById('result').textContent = `Error: ${error.message}`;
+            }
+        });
+
+        document.getElementById('generateCode').addEventListener('click', async () => {
+            const secret = document.getElementById('secretForCode').value;
+            if (!secret) {
+                document.getElementById('result').textContent = 'Please enter a secret first.';
+                return;
+            }
+            
+            try {
+                const response = await fetch(`http://localhost:8000/api/generate-2fa-code/${encodeURIComponent(secret)}`);
+                const data = await response.json();
+                
+                document.getElementById('code').textContent = data.code;
+                document.getElementById('codeForValidation').value = data.code;
+                
+                document.getElementById('result').textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                document.getElementById('result').textContent = `Error: ${error.message}`;
+            }
+        });
+
+        document.getElementById('validateCode').addEventListener('click', async () => {
+            const secret = document.getElementById('secretForValidation').value;
+            const code = document.getElementById('codeForValidation').value;
+            
+            if (!secret || !code) {
+                document.getElementById('result').textContent = 'Please enter both secret and code.';
+                return;
+            }
+            
+            try {
+                const response = await fetch('http://localhost:8000/api/validate-2fa', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        secret,
+                        code,
+                    }),
+                });
+                
+                const data = await response.json();
+                
+                document.getElementById('validationResult').textContent = 
+                    data.valid ? 'Valid ✅' : 'Invalid ❌';
+                
+                document.getElementById('result').textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                document.getElementById('result').textContent = `Error: ${error.message}`;
+            }
+        });
+    </script>
+</body>
+</html> 

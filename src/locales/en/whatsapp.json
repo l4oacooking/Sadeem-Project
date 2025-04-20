@@ -1,0 +1,10 @@
+{
+  "phoneNumber": "Phone Number",
+  "phonePlaceholder": "Enter recipient's phone number",
+  "customMessage": "Custom Message (Optional)",
+  "messagePlaceholder": "Add a custom message to your delivery notification",
+  "send": "Send Notification",
+  "sending": "Sending...",
+  "success": "Notification sent successfully!",
+  "error": "Failed to send notification. Please try again."
+} 
