@@ -4,12 +4,15 @@ import { useNavigate } from 'react-router-dom';
 
 const Index = () => {
   const navigate = useNavigate();
-  
+
   useEffect(() => {
-    navigate('/');
-  }, [navigate]);
+    const storeId = localStorage.getItem('store_id');
+    const isSuperadmin = localStorage.getItem('superadmin');
   
-  return null;
+    if (!storeId && !isSuperadmin) {
+      navigate('/login');
+    }
+  }, [navigate]);
 };
 
 export default Index;

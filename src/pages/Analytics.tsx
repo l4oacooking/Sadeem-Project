@@ -6,6 +6,10 @@ import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { useToast } from '@/hooks/use-toast';
 import { BarChart3, TrendingUp, Users } from 'lucide-react';
 import { useTranslation } from '@/hooks/use-translation';
+import { useNavigate } from 'react-router-dom';
+
+// ثم داخل الكومبوننت:
+
 
 // Function to check if using demo account
 const isDemoAccount = () => {
@@ -68,7 +72,17 @@ type AnalyticsProps = {
 const Analytics = ({ isAdmin = false }: AnalyticsProps) => {
   const { toast } = useToast();
   const { t } = useTranslation();
-  
+  const navigate = useNavigate();
+
+useEffect(() => {
+  const storeId = localStorage.getItem('store_id');
+  const isSuperadmin = localStorage.getItem('superadmin');
+
+  if (!storeId && !isSuperadmin) {
+    navigate('/login');
+  }
+}, [navigate]);
+
   const { data, isLoading, error } = useQuery({
     queryKey: ['analytics', isAdmin],
     queryFn: () => getAnalyticsData(isAdmin),

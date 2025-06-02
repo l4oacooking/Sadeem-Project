@@ -11,12 +11,15 @@ export default defineConfig(({ mode }) => ({
   },
   plugins: [
     react(),
-    mode === 'development' &&
-    componentTagger(),
+    mode === 'development' && componentTagger(),
   ].filter(Boolean),
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      buffer: 'buffer', // 👈 ممتاز أنك أضفت هذا
     },
+  },
+  define: {
+    global: 'globalThis', // ✅ هذا يخلّي Buffer شغّال بالمتصفح
   },
 }));

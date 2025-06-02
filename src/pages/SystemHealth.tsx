@@ -16,6 +16,10 @@ import { Badge } from '@/components/ui/badge';
 import { Activity, AlertCircle, Check, Database, RefreshCcw, Server, ShieldAlert } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useTranslation } from '@/hooks/use-translation';
+import { useNavigate } from 'react-router-dom';
+
+// ثم داخل الكومبوننت:
+
 
 // Empty system health data
 const getSystemHealthData = async () => {
@@ -38,7 +42,17 @@ const getSystemHealthData = async () => {
 const SystemHealth = () => {
   const { toast } = useToast();
   const { t } = useTranslation();
-  
+  const navigate = useNavigate();
+
+useEffect(() => {
+  const storeId = localStorage.getItem('store_id');
+  const isSuperadmin = localStorage.getItem('superadmin');
+
+  if (!storeId && !isSuperadmin) {
+    navigate('/login');
+  }
+}, [navigate]);
+
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['systemHealth'],
     queryFn: getSystemHealthData,

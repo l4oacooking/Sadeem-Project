@@ -18,7 +18,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Trash2, RefreshCw, Phone, Clock, User, AlertTriangle, Eraser } from 'lucide-react';
+import { Trash2, RefreshCw, RefreshCcw,  Phone, Clock, User, AlertTriangle, Eraser } from 'lucide-react';
+import { supabase } from '../supabaseClient'; // Ensure this import is at the top
 
 interface User {
   number: string;
@@ -36,7 +37,9 @@ interface UserManagementDialogProps {
   users: User[];
   onDeleteUser: (accountId: string, userNumber: string) => void;
   onResetUserTwoFALimit: (accountId: string, userNumber: string) => void;
-  onUpdateUsers: (accountId: string, updatedUsers: User[]) => void;
+  onUpdateUsers: (accountId: string, users: User[]) => void;
+  accounts: any[]; // ✅
+  setAccounts: React.Dispatch<React.SetStateAction<any[]>>; // ✅
 }
 
 export default function UserManagementDialog({
@@ -48,6 +51,8 @@ export default function UserManagementDialog({
   onDeleteUser,
   onResetUserTwoFALimit,
   onUpdateUsers,
+  accounts,
+  setAccounts
 }: UserManagementDialogProps) {
   const { t } = useTranslation();
   const [confirmingEraseAll, setConfirmingEraseAll] = useState(false);
@@ -88,7 +93,7 @@ export default function UserManagementDialog({
       return dateString; // Return as is if parsing fails
     }
   };
-
+  
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent className="max-w-4xl bg-[#101113] text-gray-200">
@@ -121,14 +126,39 @@ export default function UserManagementDialog({
                 </>
               )}
             </Button>
-            <Button 
-              onClick={handleResetAllTwoFALimits}
-              variant="outline"
-              className="flex-1"
-            >
-              <RefreshCw className="h-4 w-4 mr-2" />
-              {t('Reset All 2FA Limits')}
-            </Button>
+            <Button
+  variant="outline"
+  onClick={async () => {
+    if (!accountId) return;
+
+    const account = accounts.find((a) => a.id === accountId);
+    if (!account || !account.users) return;
+
+    const updatedUsers = account.users.map((user) => ({
+      ...user,
+      code_claimed: 0,
+      timestamp_code: new Date().toISOString(),
+    }));
+
+    const { error } = await supabase
+      .from('accounts')
+      .update({ users: updatedUsers })
+      .eq('id', accountId);
+
+    if (error) {
+      toast.error('Failed to reset 2FA limits');
+    } else {
+      toast.success('All 2FA limits reset');
+      setAccounts((prev) =>
+        prev.map((acc) =>
+          acc.id === accountId ? { ...acc, users: updatedUsers } : acc
+        )
+      );
+    }
+  }}
+>
+  Reset All 2FA Limits <RefreshCcw className="ml-2 h-4 w-4" />
+</Button>
           </div>
 
           <div className="border rounded-md overflow-hidden">

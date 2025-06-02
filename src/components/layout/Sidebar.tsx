@@ -16,12 +16,7 @@ import {
   Activity,
   Download,
   Wrench,
-  Book,
-  Languages,
-  Package2,
-  Buildings,
-  GraduationCap,
-  Heart
+  Book
 } from 'lucide-react';
 import { useTranslation } from '@/hooks/use-translation';
 import { exportToCSV } from '@/lib/utils';
@@ -29,6 +24,7 @@ import { toast } from 'sonner';
 
 type SidebarProps = {
   isAdmin?: boolean;
+  avatar?: string;
 };
 
 type NavItem = {
@@ -51,26 +47,18 @@ export default function Sidebar({ isAdmin = false }: SidebarProps) {
         setCollapsed(false);
       }
     };
-
-    // Set initial state based on screen size
     handleResize();
-
-    // Add event listener
     window.addEventListener('resize', handleResize);
-
-    // Clean up
-    return () => {
-      window.removeEventListener('resize', handleResize);
-    };
+    return () => window.removeEventListener('resize', handleResize);
   }, []);
-
-  const storeNavItems: NavItem[] = [
-    { label: 'Dashboard', icon: <LayoutDashboard size={20} />, href: '/dashboard' },
-    { label: 'Analytics', icon: <BarChart3 size={20} />, href: '/analytics' },
-    { label: 'Products', icon: <Package size={20} />, href: '/products' },
-    { label: 'Admins', icon: <Users size={20} />, href: '/admins' },
-    { label: 'Knowledge Base', icon: <Book size={20} />, href: '/knowledge' },
-  ];
+const storeNavItems: NavItem[] = [
+  { label: 'Dashboard', icon: <LayoutDashboard size={20} />, href: '/dashboard' },
+  { label: 'Analytics', icon: <BarChart3 size={20} />, href: '/analytics' },
+  { label: 'Products', icon: <Package size={20} />, href: '/products' },
+  { label: 'Admins', icon: <Users size={20} />, href: '/admins' },
+  { label: 'Knowledge Base', icon: <Book size={20} />, href: '/knowledge' },
+  { label: 'Support', icon: <MessageSquare size={20} />, href: '/support' }, // 👈 أضف هذا السطر
+];
 
   const adminNavItems: NavItem[] = [
     { label: 'Dashboard', icon: <LayoutDashboard size={20} />, href: '/admin' },
@@ -83,34 +71,21 @@ export default function Sidebar({ isAdmin = false }: SidebarProps) {
 
   const navItems = isAdmin ? adminNavItems : storeNavItems;
 
-  // Function to export all store data
   const exportAllData = (e: React.MouseEvent) => {
     e.preventDefault();
-    
     try {
-      // Show export started toast
       toast.info(t('alerts.exportStarted'));
-      
-      // Get products data
       const products = JSON.parse(localStorage.getItem('products') || '[]');
-      
       if (products.length === 0) {
         toast.info(t('No products found'));
         return;
       }
-      
-      // Get accounts data
       const allAccounts = JSON.parse(localStorage.getItem('accounts') || '[]');
-      
       if (allAccounts.length === 0) {
         toast.info(t('No accounts found'));
         return;
       }
-      
-      // Format data in the requested structure
       const exportData = [];
-      
-      // Group accounts by product
       const accountsByProduct = {};
       allAccounts.forEach((account) => {
         if (!accountsByProduct[account.product_id]) {
@@ -118,17 +93,11 @@ export default function Sidebar({ isAdmin = false }: SidebarProps) {
         }
         accountsByProduct[account.product_id].push(account);
       });
-      
-      // Process each product's accounts
       Object.keys(accountsByProduct).forEach((productId) => {
         const product = products.find((p: any) => p.id === productId);
         if (!product) return;
-        
-        // Prepare accounts with structure matching the requested format
         const productAccounts = accountsByProduct[productId].map((account: any) => {
-          // Mock users data - in a real application, this would come from your database
           const mockUsers = account.users || [];
-          
           return {
             accounts_info: {
               name: account.name || account.email.split('@')[0],
@@ -151,11 +120,8 @@ export default function Sidebar({ isAdmin = false }: SidebarProps) {
             }
           };
         });
-        
         exportData.push(...productAccounts);
       });
-      
-      // Convert to JSON and save
       const dataStr = JSON.stringify(exportData, null, 2);
       const dataBlob = new Blob([dataStr], { type: 'application/json' });
       const url = URL.createObjectURL(dataBlob);
@@ -165,13 +131,15 @@ export default function Sidebar({ isAdmin = false }: SidebarProps) {
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      
       toast.success(t('alerts.exportComplete'));
     } catch (error) {
       console.error('Error exporting data:', error);
       toast.error(t('alerts.error.failedToLoad'));
     }
   };
+
+  // 👇 Add your logo image (put the logo in the public or src/assets directory, or import statically)
+  const logoUrl = '/logo.png'; // If placed in public directory
 
   return (
     <div
@@ -183,17 +151,27 @@ export default function Sidebar({ isAdmin = false }: SidebarProps) {
       style={{ direction: language === 'ar' ? 'rtl' : 'ltr' }}
       dir={language === 'ar' ? 'rtl' : 'ltr'}
     >
-      <div className="flex items-center justify-between p-4 border-b border-sidebar-border">
-        <h1 className={cn("text-xl font-semibold text-white", collapsed && "hidden")}>
+      {/* Logo and Title */}
+      <div className="flex flex-col items-center justify-center p-4 border-b border-sidebar-border relative">
+        {/* Logo */}
+        <img
+          src={logoUrl}
+          alt="Sadeem Logo"
+          className={`transition-all duration-300 rounded-xl shadow-lg mb-2 ${collapsed ? "w-8 h-8" : "w-20 h-20"}`}
+          style={{ objectFit: 'contain' }}
+        />
+        {/* Panel Title */}
+        <h1 className={cn("text-xl font-semibold text-white text-center", collapsed && "hidden")}>
           {isAdmin ? t("Admin Panel") : t("Store Panel")}
         </h1>
+        {/* Collapse Button */}
         <Button
           variant="ghost"
           size="icon"
           onClick={() => setCollapsed(!collapsed)}
-          className="text-sidebar-foreground hover:bg-sidebar-accent"
+          className="text-sidebar-foreground hover:bg-sidebar-accent absolute top-2 right-2"
         >
-          {rtl ? 
+          {rtl ?
             (collapsed ? <ChevronLeft size={20} /> : <ChevronRight size={20} />) :
             (collapsed ? <ChevronRight size={20} /> : <ChevronLeft size={20} />)
           }
@@ -202,9 +180,8 @@ export default function Sidebar({ isAdmin = false }: SidebarProps) {
 
       <nav className="flex-1 space-y-1 p-2 overflow-y-auto">
         {navItems.map((item) => {
-          const isActive = location.pathname === item.href || 
-                          (item.href !== '/admin' && item.href !== '/dashboard' && location.pathname.startsWith(item.href));
-          
+          const isActive = location.pathname === item.href ||
+            (item.href !== '/admin' && item.href !== '/dashboard' && location.pathname.startsWith(item.href));
           return (
             <Link
               key={item.href}
@@ -244,7 +221,7 @@ export default function Sidebar({ isAdmin = false }: SidebarProps) {
           <Settings size={20} />
           {!collapsed && <span className={cn("text-sm font-medium", rtl ? "mr-3" : "ml-3")}>{t("Settings")}</span>}
         </Link>
-        
+
         {/* Download Option for Store Owner */}
         {!isAdmin && (
           <Link
@@ -258,7 +235,7 @@ export default function Sidebar({ isAdmin = false }: SidebarProps) {
             {!collapsed && <span className={cn("text-sm font-medium", rtl ? "mr-3" : "ml-3")}>{t("Export Data")}</span>}
           </Link>
         )}
-        
+
         {/* System Health Link for Admin */}
         {isAdmin && (
           <Link

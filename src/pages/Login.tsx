@@ -1,148 +1,135 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import sadeemLogo from '@/assets/logo.png';
 import { Eye, EyeOff } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { useTranslation } from '@/hooks/use-translation';
-import { supabase } from '../supabaseClient'; // Ensure this import is at the top
+import { useNavigate } from 'react-router-dom';
+import { supabase } from '@/supabaseClient';
 
 export default function Login() {
-  const { t, language, toggleLanguage, rtl } = useTranslation();
-  const navigate = useNavigate();
-  
-  const [storeId, setStoreId] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [isFirstLogin, setIsFirstLogin] = useState(false);
+  const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
+  const navigate = useNavigate();
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-  
-    // تحقق من جدول admins يدويًا
-    const { data, error } = await supabase
-      .from('admins')
-      .select('*')
-      .eq('store_id', storeId)
-      .eq('password', password)
-      .single();
-  
-    if (error || !data) {
-      alert('Invalid credentials. Please try again.');
-    } else {
-      localStorage.setItem('store_id', storeId); // تخزين session
-      navigate('/dashboard');
-    }
-  
+const handleSubmit = async (e) => {
+  e.preventDefault();
+  setLoading(true);
+
+  // تسجيل الدخول
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+
+  if (error) {
+    alert('Login failed: ' + error.message);
     setLoading(false);
-  };  
+    return;
+  }
+
+  // انتظر السيشن من Supabase
+  let tries = 0;
+  let session = null;
+  while (tries < 5 && !session) {
+    const { data: s } = await supabase.auth.getSession();
+    session = s.session;
+    if (!session) await new Promise((res) => setTimeout(res, 200));
+    tries++;
+  }
+  if (!session) {
+    alert("Couldn't establish session. Please refresh and try again.");
+    setLoading(false);
+    return;
+  }
+
+  // استخرج المعلومات وضعها بالـ localStorage
+  let jwt: any = {};
+  try { jwt = JSON.parse(atob(session.access_token.split('.')[1])); } catch {}
+  const role = jwt.user_metadata?.role;
+  const store_id = jwt.user_metadata?.store_id;
+  if (role && store_id) {
+    localStorage.setItem('session', JSON.stringify({ role, store_id }));
+    localStorage.setItem('store_id', store_id);
+  } else {
+    alert("No role or store_id found!");
+    setLoading(false);
+    return;
+  }
+
+  setLoading(false);
+  // استخدم replace في النفيجيت!
+  navigate('/dashboard', { replace: true });
+};
+
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-b from-background to-secondary/20 p-4 relative"
-         style={{ direction: language === 'ar' ? 'rtl' : 'ltr' }}
-         dir={language === 'ar' ? 'rtl' : 'ltr'}>
-      {/* Language selector */}
-      <div className={`absolute top-4 ${rtl ? 'left-4' : 'right-4'} z-10`}>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => {
-            const newLang = language === 'en' ? 'ar' : 'en';
-            toggleLanguage(newLang);
-          }}
-          className={`flex items-center gap-2 ${rtl ? 'flex-row-reverse' : ''}`}
-        >
-          {language === 'en' ? '🇸🇦 العربية' : '🇺🇸 English'}
-        </Button>
-      </div>
-      
-      <div className="glass-card w-full max-w-md p-8 rounded-xl">
-        <div className={`space-y-6 ${rtl ? 'text-right' : 'text-left'}`}>
-          <div className="text-center">
-            <h1 className="text-2xl font-bold gradient-text">
-              {t('Store Login')}
-            </h1>
-            <p className="text-muted-foreground mt-1">
-              {t('Log in to access your dashboard')}
-            </p>
+    <div className="min-h-screen w-full flex items-center justify-center bg-gradient-to-br from-[#081235] via-[#142850] to-[#19233e]">
+      <div className="w-full max-w-md mx-auto bg-[#111827] bg-opacity-90 shadow-2xl rounded-3xl p-8 flex flex-col items-center">
+        <img src={sadeemLogo} alt="Sadeem Logo" className="w-20 h-20 mb-2 drop-shadow" />
+        <h1 className="text-2xl font-bold text-white mb-1 flex items-center gap-2">
+          سديم <span className="text-blue-400">خيار التاجر الأول</span> <span>⭐</span>
+        </h1>
+        <p className="text-white/80 mb-7 text-center text-base">
+          منصة سديم - بوت واتساب لإدارة وتسليم المنتجات الرقمية بسهولة وأمان
+        </p>
+
+        <form onSubmit={handleSubmit} className="w-full space-y-5">
+          <div>
+            <label htmlFor="email" className="block text-sm font-medium text-white mb-1">
+              Email
+            </label>
+            <input
+              id="email"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              type="email"
+              required
+              className="w-full px-3 py-2 rounded-lg bg-[#22273b] text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition"
+              placeholder="Enter your email"
+            />
           </div>
-          
-          <form onSubmit={handleSubmit} className="space-y-4">
-            {/* Store ID / Email Field */}
-            <div className="space-y-1">
-              <Label htmlFor="storeId" className={`block ${rtl ? 'text-right' : ''}`}>
-                {t('Store ID')}
-              </Label>
-              <Input 
-                id="storeId" 
-                placeholder={t('Enter store ID')}
-                value={storeId}
-                onChange={(e) => setStoreId(e.target.value)}
-                className={`bg-background/50 ${rtl ? 'text-right' : ''}`}
+          <div>
+            <label htmlFor="password" className="block text-sm font-medium text-white mb-1">
+              Password
+            </label>
+            <div className="relative">
+              <input
+                id="password"
+                type={showPass ? "text" : "password"}
+                value={password}
+                onChange={e => setPassword(e.target.value)}
                 required
+                className="w-full px-3 py-2 rounded-lg bg-[#22273b] text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition pr-10"
+                placeholder="Enter your password"
               />
+              <button
+                type="button"
+                tabIndex={-1}
+                className="absolute right-2 top-2 text-white/60 hover:text-white transition"
+                onClick={() => setShowPass((v) => !v)}
+              >
+                {showPass ? <EyeOff size={20} /> : <Eye size={20} />}
+              </button>
             </div>
-            
-            {/* Password Field */}
-            <div className="space-y-1">
-              <Label htmlFor="password" className={`block ${rtl ? 'text-right' : ''}`}>
-                {isFirstLogin ? t('New Password') : t('Password')}
-              </Label>
-              <div className="relative">
-                <Input 
-                  id="password" 
-                  type={showPassword ? "text" : "password"}
-                  placeholder={t('Enter password')}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className={`bg-background/50 ${rtl ? 'pr-4 pl-10 text-right' : 'pr-10'}`}
-                  required
-                />
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className={`absolute ${rtl ? 'left-0' : 'right-0'} top-0 h-full px-3 py-2`}
-                >
-                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                </Button>
-              </div>
-              
-              {isFirstLogin && (
-                <div className={`text-xs text-muted-foreground mt-1 ${rtl ? 'text-right' : ''}`}>
-                  {t('Please set a new password for your account')}
-                </div>
-              )}
-            </div>
-            
-            {/* Submit Button */}
-            <Button 
-              type="submit" 
-              className="w-full bg-neon-blue hover:bg-neon-blue/90" 
-              disabled={loading}
-            >
-              {loading ? (
-                <div className="flex items-center gap-2">
-                  <div className="h-4 w-4 border-2 border-white border-opacity-20 border-t-white rounded-full animate-spin"></div>
-                  {t('Logging in...')}
-                </div>
-              ) : (
-                isFirstLogin ? t('Set New Password') : t('Login')
-              )}
-            </Button>
-            
-            {/* Demo Help Text */}
-            <div className={`text-xs text-center text-muted-foreground border-t border-border pt-4 mt-4 ${rtl ? 'text-right' : ''}`}>
-              <p>
-                {t('For demo: Use "new" as Store ID and "password" for first login.')}<br/>
-                For real store account: Use "user" and "password".<br/>
-                For admin access: Use "admin" and "password".
-              </p>
-            </div>
-          </form>
+          </div>
+          <button
+            type="submit"
+            className="w-full py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700 transition"
+            disabled={loading}
+          >
+            {loading ? 'Logging in...' : 'Login'}
+          </button>
+        </form>
+
+        <div className="w-full flex items-center mt-5 mb-1">
+          <div className="flex-grow border-t border-white/20" />
+          <span className="mx-3 text-xs text-white/40">أو</span>
+          <div className="flex-grow border-t border-white/20" />
         </div>
+
+        <button
+          type="button"
+          className="text-blue-400 text-sm hover:underline transition"
+          onClick={() => window.location.href = '/support'}
+        >
+          الدعم الفني
+        </button>
       </div>
     </div>
   );

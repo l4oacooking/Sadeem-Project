@@ -17,11 +17,13 @@ import { useToast } from '@/hooks/use-toast';
 import { useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { useTranslation } from "@/hooks/use-translation";
-
+import { useNavigate } from 'react-router-dom';
+import bcrypt from 'bcryptjs';
 const supabase = createClient(
-  'https://rrmrownqurlhnngqeoqm.supabase.co',
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJybXJvd25xdXJsaG5uZ3Flb3FtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDM1NDkxMDUsImV4cCI6MjA1OTEyNTEwNX0.sMBDivG_y_EHyChuAEIMz1mz20GPXGHKL2anEMli00E'
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY
 );
+
 // Form validation schemas
 const profileFormSchema = z.object({
   name: z.string().min(2, {
@@ -65,7 +67,17 @@ type SettingsProps = {
 const Settings = ({ isAdmin = false }: SettingsProps) => {
   const [activeTab, setActiveTab] = useState("profile");
   const { toast } = useToast();
+  const navigate = useNavigate();
 
+  useEffect(() => {
+    const storeId = localStorage.getItem('store_id');
+    const isSuperadmin = localStorage.getItem('superadmin');
+  
+    if (!storeId && !isSuperadmin) {
+      navigate('/login');
+    }
+  }, [navigate]);
+  
   const profileForm = useForm<z.infer<typeof profileFormSchema>>({
     resolver: zodResolver(profileFormSchema),
     defaultValues: {
@@ -76,36 +88,119 @@ const Settings = ({ isAdmin = false }: SettingsProps) => {
     }
   });
   // Profile form
- useEffect(() => {
-  const fetchStore = async () => {
-    const storeId = localStorage.getItem("store_id");
-    if (!storeId) return;
-
-    const { data, error } = await supabase
-      .from("stores")
-      .select("*")
-      .eq("id", storeId)
-      .single();
-
-    if (data && !error) {
-      profileForm.reset({
-        name: data.name || '',
-        email: data.email || '',
-        storeName: data.name || '',
-        domain: data.domain || ''
-      });
+  useEffect(() => {
+    const fetchProfile = async () => {
+      const isSuperadmin = localStorage.getItem("superadmin") === "true";
+      if (isSuperadmin) {
+        const { data, error } = await supabase
+          .from("superadmins")
+          .select("*")
+          .eq("email", localStorage.getItem("superadmin_email"))
+          .single();
+  
+        if (data && !error) {
+          profileForm.reset({
+            name: data.name || '',
+            email: data.email || '',
+            storeName: '',
+            domain: '',
+            avatar: data.avatar || ''
+          });
+        }
+      } else {
+        // صاحب متجر عادي
+        const storeId = localStorage.getItem("store_id");
+        if (!storeId) return;
+  
+        const { data, error } = await supabase
+          .from("stores")
+          .select("*")
+          .eq("id", storeId)
+          .single();
+  
+        if (data && !error) {
+          profileForm.reset({
+            name: data.name || '',
+            email: data.email || '',
+            storeName: data.name || '',
+            domain: data.domain || '',
+            avatar: data.avatar || ''
+          });
+        }
+      }
+    };
+  
+    fetchProfile();
+  }, [profileForm]);
+  
+  const onProfileSubmit = async (data: z.infer<typeof profileFormSchema>) => {
+    const isSuperadmin = localStorage.getItem("superadmin") === "true";
+  
+    if (isSuperadmin) {
+      const email = localStorage.getItem("superadmin_email");
+      if (!email) {
+        toast({
+          title: "Error",
+          description: "Superadmin email not found. Please login again.",
+          variant: "destructive",
+        });
+        return;
+      }
+  
+      const { error } = await supabase
+        .from("superadmins")
+        .update({
+          name: data.name,
+          avatar: data.avatar
+        })
+        .eq("email", email);
+  
+      if (error) {
+        toast({
+          title: "Error",
+          description: "Failed to update superadmin profile. Please try again.",
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: "Profile Updated",
+          description: "Your superadmin profile has been updated successfully.",
+        });
+      }
+    } else {
+      const storeId = localStorage.getItem("store_id");
+      if (!storeId) {
+        toast({
+          title: "Error",
+          description: "Store ID not found. Please login again.",
+          variant: "destructive",
+        });
+        return;
+      }
+  
+      const { error } = await supabase
+        .from("stores")
+        .update({
+          name: data.storeName,
+          email: data.email,
+          domain: data.domain
+        })
+        .eq("id", storeId);
+  
+      if (error) {
+        toast({
+          title: "Error",
+          description: "Failed to update store profile. Please try again.",
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: "Profile Updated",
+          description: "Your store profile has been updated successfully.",
+        });
+      }
     }
   };
-
-  fetchStore();
-}, [profileForm]);
-  const onProfileSubmit = (data: z.infer<typeof profileFormSchema>) => {
-    toast({
-      title: "Profile updated",
-      description: "Your profile information has been updated.",
-    });
-  };
-
   // Security form
   const securityForm = useForm<z.infer<typeof securityFormSchema>>({
     resolver: zodResolver(securityFormSchema),
@@ -117,66 +212,69 @@ const Settings = ({ isAdmin = false }: SettingsProps) => {
   });
 
   const onSecuritySubmit = async (data: z.infer<typeof securityFormSchema>) => {
-    const storeId = localStorage.getItem("store_id");
-    if (!storeId) {
-      toast({
-        title: "Error",
-        description: "Store ID not found. Please login again.",
-        variant: "destructive",
-      });
-      return;
-    }
-  
-    // 1️⃣ جلب الباسورد من قاعدة البيانات
-    const { data: admin, error: fetchError } = await supabase
-      .from("admins")
-      .select("password")
-      .eq("store_id", storeId)
-      .eq("role", "owner")
-      .single();
-  
-    if (fetchError || !admin) {
-      toast({
-        title: "Error",
-        description: "Failed to verify your current password.",
-        variant: "destructive",
-      });
-      return;
-    }
-  
-    // 2️⃣ تحقق من مطابقة كلمة المرور
-    if (admin.password !== data.currentPassword) {
-      toast({
-        title: "Incorrect Password",
-        description: "The current password you entered is incorrect.",
-        variant: "destructive",
-      });
-      return;
-    }
-  
-    // 3️⃣ تحديث الباسورد
-    const { error: updateError } = await supabase
-      .from("admins")
-      .update({ password: data.newPassword })
-      .eq("store_id", storeId)
-      .eq("role", "owner");
-  
-    if (updateError) {
-      toast({
-        title: "Error",
-        description: "Failed to update password. Please try again.",
-        variant: "destructive",
-      });
-      return;
-    }
-  
+  const storeId = localStorage.getItem("store_id");
+  if (!storeId) {
     toast({
-      title: "Password updated",
-      description: "Your password has been updated successfully.",
+      title: "Error",
+      description: "Store ID not found. Please login again.",
+      variant: "destructive",
     });
-  
-    securityForm.reset();
-  };
+    return;
+  }
+
+  // 1️⃣ Fetch hashed password from DB
+  const { data: admin, error: fetchError } = await supabase
+    .from("admins")
+    .select("password")
+    .eq("store_id", storeId)
+    .eq("role", "owner")
+    .single();
+
+  if (fetchError || !admin) {
+    toast({
+      title: "Error",
+      description: "Failed to verify your current password.",
+      variant: "destructive",
+    });
+    return;
+  }
+
+  // 2️⃣ Compare entered current password with hashed one
+  const passwordMatch = await bcrypt.compare(data.currentPassword, admin.password);
+  if (!passwordMatch) {
+    toast({
+      title: "Incorrect Password",
+      description: "The current password you entered is incorrect.",
+      variant: "destructive",
+    });
+    return;
+  }
+
+  // 3️⃣ Hash the new password before saving
+  const hashedPassword = await bcrypt.hash(data.newPassword, 10);
+
+  const { error: updateError } = await supabase
+    .from("admins")
+    .update({ password: hashedPassword })
+    .eq("store_id", storeId)
+    .eq("role", "owner");
+
+  if (updateError) {
+    toast({
+      title: "Error",
+      description: "Failed to update password. Please try again.",
+      variant: "destructive",
+    });
+    return;
+  }
+
+  toast({
+    title: "Password updated",
+    description: "Your password has been updated successfully.",
+  });
+
+  securityForm.reset();
+};
   
   // Appearance form
   const appearanceForm = useForm<z.infer<typeof appearanceFormSchema>>({

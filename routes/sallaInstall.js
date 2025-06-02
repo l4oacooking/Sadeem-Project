@@ -135,6 +135,56 @@ router.all('/webhook', async (req, res) => {
       console.error('Uninstall cleanup failed:', err.message);
       res.status(500).send('Cleanup failed');
     }
+  } else if ([
+    'app.trial.started',
+    'app.trial.expired',
+    'app.trial.canceled',
+    'app.subscription.started',
+    'app.subscription.renewed',
+    'app.subscription.expired',
+    'app.subscription.canceled'
+  ].includes(event)) {
+  
+    let subscriptionStatus = null;
+  
+    if (event === 'app.trial.started') {
+      subscriptionStatus = 'trial';
+    } else if (event === 'app.trial.expired') {
+      subscriptionStatus = 'trial_expired';
+    } else if (event === 'app.trial.canceled') {
+      subscriptionStatus = 'trial_canceled';
+    } else if (event === 'app.subscription.started') {
+      subscriptionStatus = 'monthly';
+    } else if (event === 'app.subscription.renewed') {
+      subscriptionStatus = 'monthly';
+    } else if (event === 'app.subscription.expired') {
+      subscriptionStatus = 'monthly_expired';
+    } else if (event === 'app.subscription.canceled') {
+      subscriptionStatus = 'monthly_canceled';
+    }
+  
+    if (subscriptionStatus) {
+      try {
+        const { error } = await supabase
+          .from('stores')
+          .update({ subscription_status: subscriptionStatus })
+          .eq('id', merchantId);
+  
+        if (error) {
+          console.error('Failed to update subscription status:', error.message);
+          return res.status(500).send('Failed to update subscription status');
+        }
+  
+        console.log(`✅ Updated subscription status for store ${merchantId} to ${subscriptionStatus}`);
+        return res.status(200).send(`Subscription status updated to ${subscriptionStatus}`);
+      } catch (err) {
+        console.error('Unexpected error while updating subscription status:', err.message);
+        return res.status(500).send('Unexpected error');
+      }
+    } else {
+      console.log('❌ Unknown subscription event');
+      return res.status(400).send('Unknown subscription event');
+    }
   } else {
     console.log(`Other event: ${event}`);
     res.status(200).send('Received');

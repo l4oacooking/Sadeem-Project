@@ -1,12 +1,17 @@
+'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import MainLayout from '@/components/layout/MainLayout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { PlusCircle, Video, FileText, Link, Upload, Trash2, Search } from 'lucide-react';
+import { PlusCircle, Video, FileText, Link as LinkIcon, Upload, Trash2, Search } from 'lucide-react';
 import { useTranslation } from '@/hooks/use-translation';
+import { supabase } from '@/supabaseClient';
+import { useNavigate } from 'react-router-dom';
+
+// ثم داخل الكومبوننت:
 
 type KnowledgeItem = {
   id: string;
@@ -15,50 +20,9 @@ type KnowledgeItem = {
   type: 'video' | 'document' | 'link';
   url: string;
   thumbnail?: string;
-  createdAt: Date;
+  createdAt: string;
   tags: string[];
 };
-
-const demoKnowledgeItems: KnowledgeItem[] = [
-  {
-    id: '1',
-    title: 'Getting Started with the Platform',
-    description: 'A quick overview of how to use the admin dashboard',
-    type: 'video',
-    url: 'https://www.youtube.com/watch?v=example1',
-    thumbnail: '/placeholder.svg',
-    createdAt: new Date('2023-12-01'),
-    tags: ['tutorial', 'admin']
-  },
-  {
-    id: '2',
-    title: 'Setting Up Your First Product',
-    description: 'Learn how to create and configure products',
-    type: 'video',
-    url: 'https://www.youtube.com/watch?v=example2',
-    thumbnail: '/placeholder.svg',
-    createdAt: new Date('2023-12-05'),
-    tags: ['products', 'tutorial']
-  },
-  {
-    id: '3',
-    title: 'User Guide PDF',
-    description: 'Complete documentation on using the platform',
-    type: 'document',
-    url: '/documents/user-guide.pdf',
-    createdAt: new Date('2023-11-15'),
-    tags: ['documentation', 'guide']
-  },
-  {
-    id: '4',
-    title: 'WhatsApp Bot Configuration',
-    description: 'How to set up and manage your WhatsApp bot',
-    type: 'link',
-    url: 'https://example.com/whatsapp-guide',
-    createdAt: new Date('2023-12-10'),
-    tags: ['bot', 'whatsapp', 'configuration']
-  }
-];
 
 interface KnowledgeBaseProps {
   isAdmin?: boolean;
@@ -66,14 +30,76 @@ interface KnowledgeBaseProps {
 
 export default function KnowledgeBase({ isAdmin = false }: KnowledgeBaseProps) {
   const { t, language } = useTranslation();
-  const [searchQuery, setSearchQuery] = useState('');
-  const [items, setItems] = useState<KnowledgeItem[]>(demoKnowledgeItems);
+  const [items, setItems] = useState<KnowledgeItem[]>([]);
   const [isAddingNew, setIsAddingNew] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const [selectedTab, setSelectedTab] = useState('all');
+  const [newItem, setNewItem] = useState<Partial<KnowledgeItem>>({});
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const storeId = localStorage.getItem('store_id');
+    const isSuperadmin = localStorage.getItem('superadmin');
+  
+    if (!storeId && !isSuperadmin) {
+      navigate('/login');
+    }
+  }, [navigate]);
+  
+  useEffect(() => {
+    fetchKnowledgeBase();
+  }, []);
+
+  const fetchKnowledgeBase = async () => {
+    const { data, error } = await supabase
+      .from('knowledge_base')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) {
+      console.error('Failed to fetch knowledge base:', error.message);
+    } else {
+      setItems(data || []);
+    }
+  };
+
+  const handleSaveNewItem = async () => {
+    if (!newItem.title || !newItem.url || !newItem.type) {
+      alert('Please fill all required fields.');
+      return;
+    }
+    const fixedUrl = newItem.url?.startsWith('http') ? newItem.url : `https://${newItem.url}`;
+    const insertItem = {
+      id: crypto.randomUUID(),
+      title: newItem.title,
+      description: newItem.description || '',
+      type: newItem.type,
+      url: newItem.url,
+      tags: (newItem.tags || []),
+      thumbnail: newItem.thumbnail || '',
+      created_at: new Date().toISOString(),
+    };
+  
+    const { error } = await supabase.from('knowledge_base').insert(insertItem);
+    if (error) {
+      console.error('Failed to save resource:', error.message);
+    } else {
+      await fetchKnowledgeBase();
+      setIsAddingNew(false);
+      setNewItem({});
+    }
+  };
+  const handleDelete = async (id: string) => {
+    const { error } = await supabase.from('knowledge_base').delete().eq('id', id);
+    if (error) {
+      console.error('Failed to delete resource:', error.message);
+    } else {
+      fetchKnowledgeBase();
+    }
+  };
 
   const filteredItems = items.filter(item => {
-    const matchesSearch = 
-      item.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
+    const matchesSearch =
+      item.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
       item.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
       item.tags.some(tag => tag.toLowerCase().includes(searchQuery.toLowerCase()));
     
@@ -81,15 +107,11 @@ export default function KnowledgeBase({ isAdmin = false }: KnowledgeBaseProps) {
     return item.type === selectedTab && matchesSearch;
   });
 
-  const handleDelete = (id: string) => {
-    setItems(items.filter(item => item.id !== id));
-  };
-
   const getTypeIcon = (type: string) => {
-    switch(type) {
+    switch (type) {
       case 'video': return <Video className="text-blue-500" />;
       case 'document': return <FileText className="text-green-500" />;
-      case 'link': return <Link className="text-purple-500" />;
+      case 'link': return <LinkIcon className="text-purple-500" />;
       default: return null;
     }
   };
@@ -97,9 +119,11 @@ export default function KnowledgeBase({ isAdmin = false }: KnowledgeBaseProps) {
   return (
     <MainLayout isAdmin={isAdmin}>
       <div className="space-y-6">
+
+        {/* Header */}
         <div className={`flex items-center justify-between ${language === 'ar' ? 'flex-row-reverse' : ''}`}>
           <div>
-            <h1 className="text-3xl font-bold tracking-tight">{t("Knowledge Base")}</h1>
+            <h1 className="text-3xl font-bold">{t("Knowledge Base")}</h1>
             <p className="text-muted-foreground mt-1">
               {isAdmin ? t("Manage educational resources for store owners") : t("Learn how to use the platform effectively")}
             </p>
@@ -112,6 +136,7 @@ export default function KnowledgeBase({ isAdmin = false }: KnowledgeBaseProps) {
           )}
         </div>
 
+        {/* Search and Filter */}
         <div className={`flex justify-between items-center gap-4 ${language === 'ar' ? 'flex-row-reverse' : ''}`}>
           <div className="relative flex-1">
             <Search className={`absolute ${language === 'ar' ? 'right-3' : 'left-3'} top-3 h-4 w-4 text-muted-foreground`} />
@@ -132,62 +157,61 @@ export default function KnowledgeBase({ isAdmin = false }: KnowledgeBaseProps) {
           </Tabs>
         </div>
 
+        {/* Add New Item Form */}
         {isAdmin && isAddingNew ? (
           <Card>
             <CardHeader>
               <CardTitle>{t("Add New Knowledge Resource")}</CardTitle>
-              <CardDescription>
-                {t("Upload or link to resources that will help store owners")}
-              </CardDescription>
+              <CardDescription>{t("Upload or link to resources that will help store owners")}</CardDescription>
             </CardHeader>
             <CardContent>
-              <form className="space-y-4">
+              <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); handleSaveNewItem(); }}>
                 <div className="grid grid-cols-1 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium mb-1">{t("Title")}</label>
-                    <Input placeholder={t("Enter resource title")} />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-1">{t("Description")}</label>
-                    <Input placeholder={t("Enter a brief description")} />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-1">{t("Resource Type")}</label>
-                    <Tabs defaultValue="video">
-                      <TabsList className="w-full">
-                        <TabsTrigger value="video" className="flex-1">{t("Video")}</TabsTrigger>
-                        <TabsTrigger value="document" className="flex-1">{t("Document")}</TabsTrigger>
-                        <TabsTrigger value="link" className="flex-1">{t("Link")}</TabsTrigger>
-                      </TabsList>
-                      <TabsContent value="video" className="pt-4">
-                        <Input placeholder={t("YouTube or video URL")} />
-                      </TabsContent>
-                      <TabsContent value="document" className="pt-4">
-                        <Button variant="outline" className="w-full h-24">
-                          <Upload className="mr-2" />
-                          {t("Upload PDF or Document")}
-                        </Button>
-                      </TabsContent>
-                      <TabsContent value="link" className="pt-4">
-                        <Input placeholder={t("External resource URL")} />
-                      </TabsContent>
-                    </Tabs>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-1">{t("Tags")}</label>
-                    <Input placeholder={t("Enter tags separated by commas")} />
-                  </div>
+                  <Input
+                    placeholder={t("Enter resource title")}
+                    value={newItem.title || ''}
+                    onChange={(e) => setNewItem(prev => ({ ...prev, title: e.target.value }))}
+                  />
+                  <Input
+                    placeholder={t("Enter a brief description")}
+                    value={newItem.description || ''}
+                    onChange={(e) => setNewItem(prev => ({ ...prev, description: e.target.value }))}
+                  />
+                  <Input
+                    placeholder={t("Resource URL")}
+                    value={newItem.url || ''}
+                    onChange={(e) => setNewItem(prev => ({ ...prev, url: e.target.value }))}
+                  />
+                  <Input
+                    placeholder={t("Enter tags separated by commas")}
+                    value={newItem.tags?.join(', ') || ''}
+                    onChange={(e) => setNewItem(prev => ({ ...prev, tags: e.target.value.split(',').map(tag => tag.trim()) }))}
+                  />
                 </div>
-                <div className={`flex justify-end gap-2 ${language === 'ar' ? 'flex-row-reverse' : ''}`}>
-                  <Button variant="outline" onClick={() => setIsAddingNew(false)}>
+                <div>
+  <label className="block text-sm font-medium mb-1">{t("Resource Type")}</label>
+  <Tabs defaultValue={newItem.type || 'video'} onValueChange={(val) => setNewItem(prev => ({ ...prev, type: val as 'video' | 'document' | 'link' }))}>
+    <TabsList className="w-full">
+      <TabsTrigger value="video" className="flex-1">{t("Video")}</TabsTrigger>
+      <TabsTrigger value="document" className="flex-1">{t("Document")}</TabsTrigger>
+      <TabsTrigger value="link" className="flex-1">{t("Link")}</TabsTrigger>
+    </TabsList>
+  </Tabs>
+</div>
+                <div className="flex justify-end gap-2">
+                  <Button variant="outline" type="button" onClick={() => setIsAddingNew(false)}>
                     {t("Cancel")}
                   </Button>
-                  <Button type="submit">{t("Save Resource")}</Button>
+                  <Button type="submit">
+                    {t("Save Resource")}
+                  </Button>
                 </div>
               </form>
             </CardContent>
           </Card>
         ) : (
+
+          /* Display Knowledge Items */
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {filteredItems.length > 0 ? (
               filteredItems.map(item => (
@@ -207,24 +231,7 @@ export default function KnowledgeBase({ isAdmin = false }: KnowledgeBaseProps) {
                     <CardDescription>{item.description}</CardDescription>
                   </CardHeader>
                   <CardContent>
-                    {item.thumbnail && item.type === 'video' && (
-                      <div className="relative aspect-video bg-muted rounded-md overflow-hidden mb-3">
-                        <img src={item.thumbnail} alt={item.title} className="object-cover w-full h-full" />
-                        <div className="absolute inset-0 flex items-center justify-center bg-black/30">
-                          <Button variant="ghost" size="icon" className="text-white">
-                            <Video size={30} />
-                          </Button>
-                        </div>
-                      </div>
-                    )}
-                    <div className={`flex flex-wrap gap-1 mb-2 ${language === 'ar' ? 'justify-end' : ''}`}>
-                      {item.tags.map(tag => (
-                        <span key={tag} className="bg-secondary text-secondary-foreground text-xs px-2 py-1 rounded-full">
-                          {tag}
-                        </span>
-                      ))}
-                    </div>
-                    <div className={`flex ${language === 'ar' ? 'justify-start' : 'justify-end'}`}>
+                    <div className="flex justify-end">
                       <Button variant="outline" size="sm" className="text-xs" asChild>
                         <a href={item.url} target="_blank" rel="noopener noreferrer">
                           {t("View Resource")}
@@ -246,6 +253,7 @@ export default function KnowledgeBase({ isAdmin = false }: KnowledgeBaseProps) {
               </div>
             )}
           </div>
+
         )}
       </div>
     </MainLayout>

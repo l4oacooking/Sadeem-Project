@@ -6,8 +6,15 @@ import { ChartCard } from '@/components/dashboard/ChartCard';
 import { AnalyticsChart } from '@/components/dashboard/AnalyticsChart';
 import { Button } from '@/components/ui/button';
 import { useTranslation } from '@/hooks/use-translation';
+import { useEffect, useState } from 'react';
+import { supabase } from '../supabaseClient';
+import { format, isToday, isThisWeek, parseISO } from 'date-fns';
 
-// Empty chart data
+
+// ثم داخل الكومبوننت:
+
+
+
 const emptyChartData = [
   { name: 'Mon', value: 0 },
   { name: 'Tue', value: 0 },
@@ -20,7 +27,72 @@ const emptyChartData = [
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  console.log("🚩 Dashboard mounted");
+useEffect(() => {
+  const storeId = localStorage.getItem('store_id');
+  const isSuperadmin = localStorage.getItem('superadmin');
+
+  if (!storeId && !isSuperadmin) {
+    navigate('/login');
+  }
+}, [navigate]);
+
   const { t, rtl } = useTranslation();
+
+  const [accountClaimsToday, setAccountClaimsToday] = useState(0);
+  const [weeklyClaims, setWeeklyClaims] = useState(emptyChartData);
+  const [totalProducts, setTotalProducts] = useState(0);
+  const [activeUsers, setActiveUsers] = useState(0);
+
+  useEffect(() => {
+    const fetchAnalytics = async () => {
+      const storeId = localStorage.getItem('store_id');
+      if (!storeId) return;
+
+      // Fetch claims
+      const { data: claims, error } = await supabase
+        .from('claims')
+        .select('*')
+        .eq('store_id', storeId);
+
+      if (error) {
+        console.error('Error fetching claims:', error);
+        return;
+      }
+
+      if (!claims) return;
+
+      // حساب عدد المطالبات اليوم
+      const todayClaims = claims.filter(c => isToday(parseISO(c.timestamp)));
+      setAccountClaimsToday(todayClaims.length);
+
+      // حساب عدد المطالبات بالأسبوع
+      const weekDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+const weeklyCounts = weekDays.map(day => ({
+  name: day,
+  value: claims.filter(c => {
+    const date = parseISO(c.timestamp);
+    return isThisWeek(date) && format(date, 'EEE') === day;
+  }).length
+}));
+      // Fetch total products (optional - if you want to fill "Total Products")
+      const { data: products, error: productsError } = await supabase
+        .from('products')
+        .select('id')
+        .eq('store_id', storeId);
+
+      if (products) {
+        setTotalProducts(products.length);
+      }
+
+      // حساب عدد المستخدمين الفريدين بناءً على الجوال
+      const uniqueUsers = new Set(claims.map(c => c.phone));
+      setActiveUsers(uniqueUsers.size);
+    };
+
+    fetchAnalytics();
+  }, []);
 
   return (
     <MainLayout>
@@ -37,13 +109,13 @@ export default function Dashboard() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <StatusCard 
             title={t("Total Products")}
-            value="0" 
+            value={totalProducts.toString()} 
             icon={<Package size={24} />} 
             color="blue"
           />
           <StatusCard 
             title={t("Active Users")}
-            value="0" 
+            value={activeUsers.toString()} 
             icon={<Users size={24} />} 
             color="green"
           />
@@ -55,7 +127,7 @@ export default function Dashboard() {
           />
           <StatusCard 
             title={t("Account Claims Today")}
-            value="0" 
+            value={accountClaimsToday.toString()} 
             icon={<ShoppingBag size={24} />} 
           />
         </div>
@@ -66,7 +138,7 @@ export default function Dashboard() {
             title={t("Weekly Account Claims")}
             description={t("The number of accounts claimed per day this week")}
           >
-            <AnalyticsChart data={emptyChartData} type="bar" height={250} />
+            <AnalyticsChart data={weeklyClaims} type="bar" height={250} />
           </ChartCard>
           
           <ChartCard 
@@ -77,23 +149,6 @@ export default function Dashboard() {
               <p className="text-muted-foreground">{t("No product data available")}</p>
             </div>
           </ChartCard>
-        </div>
-
-        {/* Empty States Section */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {/* Empty Alerts Section */}
-          <div className="dashboard-card">
-            <div className={`flex justify-between items-center mb-4 ${rtl ? 'flex-row-reverse' : ''}`}>
-              <h3 className="text-lg font-semibold">{t("Recent Alerts")}</h3>
-              <Button variant="outline" size="sm" onClick={() => navigate('/alerts')}>
-                {t("View All")}
-              </Button>
-            </div>
-            <div className="flex items-center justify-center h-40 text-muted-foreground">
-              <p>{t("No alerts to display")}</p>
-            </div>
-          </div>
-
         </div>
       </div>
     </MainLayout>

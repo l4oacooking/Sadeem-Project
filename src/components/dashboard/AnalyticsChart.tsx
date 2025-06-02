@@ -60,7 +60,7 @@ export function AnalyticsChart({
           <BarChart {...commonProps}>
             {showGrid && <CartesianGrid strokeDasharray="3 3" opacity={0.1} />}
             {showXAxis && <XAxis dataKey={xAxisDataKey} axisLine={false} tickLine={false} />}
-            {showYAxis && <YAxis axisLine={false} tickLine={false} />}
+            {showYAxis && <YAxis allowDecimals={false} axisLine={false} tickLine={false} />}
             {showTooltip && <Tooltip contentStyle={{ backgroundColor: 'rgba(26, 31, 44, 0.8)', border: 'none', borderRadius: '8px' }} />}
             <Bar dataKey={dataKey} fill={colors[0]} radius={[4, 4, 0, 0]} />
           </BarChart>

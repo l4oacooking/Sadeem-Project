@@ -14,12 +14,18 @@ import ProductForm from "./pages/ProductForm";
 import SystemHealth from "./pages/SystemHealth";
 import Settings from "./pages/Settings";
 import KnowledgeBase from "./pages/KnowledgeBase";
-import Admins from "./pages/Admins";
+import Admins from './pages/Admins';
 import NotFound from "./pages/NotFound";
 import Index from "./pages/Index";
 import Stores from "./pages/Stores";
-
+import SuperAdminRoute from './components/SuperAdminRoute';
+import Supportlogin from "./pages/Supportlogin";
+import ProtectedRoute from "./components/ProtectedRoute";
+import Support from './pages/Support'; // 👈 new import
+import SadeemLanding from './pages/SadeemLanding';
 const queryClient = new QueryClient();
+
+
 
 function App() {
   useEffect(() => {
@@ -33,30 +39,83 @@ function App() {
         <TranslationProvider>
           <Router>
             <Routes>
-              <Route path="/" element={<Navigate to="/login" replace />} />
+              <Route path="/" element={<SadeemLanding />} />
               <Route path="/login" element={<Login />} />
+              <Route path="/supportlogin" element={<Supportlogin />} />
               <Route path="/index" element={<Index />} />
-              
-              {/* Store Owner Routes */}
-              <Route path="/dashboard" element={<Dashboard />} />
-              <Route path="/analytics" element={<Analytics />} />
-              <Route path="/products" element={<Products />} />
-              <Route path="/products/new" element={<ProductForm />} />
-              <Route path="/products/:id" element={<ProductForm />} />
-              <Route path="/admins" element={<Admins />} />
-              <Route path="/knowledge" element={<KnowledgeBase />} />
-              <Route path="/settings" element={<Settings />} />
-              
-              {/* Admin Routes */}
-              <Route path="/admin" element={<AdminDashboard />} />
-              <Route path="/admin/analytics" element={<Analytics isAdmin />} />
-              <Route path="/admin/stores" element={<Stores />} />
-              <Route path="/admin/stores/:id" element={<ProductForm isAdmin />} />
-              <Route path="/admin/stores/:id/admins" element={<Admins />} />
-              <Route path="/admin/system" element={<SystemHealth />} />
-              <Route path="/admin/tools" element={<Settings isAdmin />} />
-              <Route path="/admin/knowledge" element={<KnowledgeBase isAdmin />} />
-              
+              <Route path="/support" element={<Support />} />
+<Route
+ path="/dashboard" 
+ element={
+      <ProtectedRoute>
+ <Dashboard />
+ </ProtectedRoute>
+ }
+  />
+<Route
+  path="/analytics"
+  element={
+    <ProtectedRoute>
+      <Analytics />
+    </ProtectedRoute>
+  }
+/>
+<Route
+  path="/products"
+  element={
+    <ProtectedRoute>
+      <Products />
+    </ProtectedRoute>
+  }
+/>
+<Route
+  path="/products/new"
+  element={
+    <ProtectedRoute>
+      <ProductForm />
+    </ProtectedRoute>
+  }
+/>
+<Route
+  path="/products/:id"
+  element={
+    <ProtectedRoute>
+      <ProductForm />
+    </ProtectedRoute>
+  }
+/>
+<Route
+  path="/admins"
+  element={
+    <ProtectedRoute>
+      <Admins />
+    </ProtectedRoute>
+  }
+/>
+<Route
+  path="/knowledge"
+  element={
+    <ProtectedRoute>
+      <KnowledgeBase />
+    </ProtectedRoute>
+  }
+/>
+<Route
+  path="/settings"
+  element={
+    <ProtectedRoute>
+      <Settings />
+    </ProtectedRoute>
+  }
+/>
+<Route path="/admin" element={<SuperAdminRoute><AdminDashboard /></SuperAdminRoute>} />
+<Route path="/admin/analytics" element={<SuperAdminRoute><Analytics isAdmin /></SuperAdminRoute>} />
+<Route path="/admin/stores" element={<SuperAdminRoute><Stores /></SuperAdminRoute>} />
+<Route path="/admin/stores/:id" element={<SuperAdminRoute><ProductForm isAdmin /></SuperAdminRoute>} />
+<Route path="/admin/stores/:id/admins" element={<SuperAdminRoute><Admins /></SuperAdminRoute>} />
+<Route path="/admin/system" element={<SuperAdminRoute><SystemHealth /></SuperAdminRoute>} />
+<Route path="/admin/tools" element={<SuperAdminRoute><Settings isAdmin /></SuperAdminRoute>} />
+<Route path="/admin/knowledge" element={<SuperAdminRoute><KnowledgeBase isAdmin /></SuperAdminRoute>} />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </Router>

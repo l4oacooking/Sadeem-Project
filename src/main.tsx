@@ -2,7 +2,8 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
 import './index.css'
-
+import { Buffer } from 'buffer';
+window.Buffer = Buffer; // ✅ ضروري لبيئة المتصفح
 // Get saved language preference
 const savedLanguage = localStorage.getItem('language') || 'en';
 const isRTL = savedLanguage === 'ar';

@@ -29,6 +29,11 @@ import * as z from 'zod';
 import { Calendar, Check, Hourglass, Plus, Trash2, UserPlus, X } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useTranslation } from '@/hooks/use-translation';
+import { createClient } from '@supabase/supabase-js';
+import { supabase } from '../supabaseClient';
+import { useNavigate } from 'react-router-dom'; // تأكد مستورد useNavigate
+import bcrypt from 'bcryptjs';
+
 
 // Function to check if using demo account
 const isDemoAccount = () => {
@@ -38,25 +43,20 @@ const isDemoAccount = () => {
 
 // Data fetching function - will use mock data only for demo accounts
 const getAdminsData = async () => {
-  // Simulate API call
-  await new Promise((resolve) => setTimeout(resolve, 1000));
-  
-  // Only return mock data for demo accounts
-  if (isDemoAccount()) {
-    return {
-      admins: Array.from({ length: 5 }, (_, i) => ({
-        id: `admin-${i+1}`,
-        name: `Admin ${i+1}`,
-        email: `admin${i+1}@example.com`,
-        role: i === 0 ? 'Owner' : 'Admin',
-        lastLogin: new Date(Date.now() - Math.floor(Math.random() * 7) * 24 * 60 * 60 * 1000).toISOString(),
-        status: i % 3 === 0 ? 'Online' : 'Offline',
-      })),
-    };
+  const storeId = localStorage.getItem('store_id');
+  if (!storeId) return { admins: [] };
+
+  const { data, error } = await supabase
+  .from('admins')
+  .select('*')
+  .eq('store_id', storeId);
+
+  if (error) {
+    console.error('Error fetching admins:', error);
+    return { admins: [] };
   }
-  
-  // For real accounts, return empty array until connected to real backend
-  return { admins: [] };
+
+  return { admins: data };
 };
 
 const Admins = () => {
@@ -65,8 +65,20 @@ const Admins = () => {
   const [selectedAdminId, setSelectedAdminId] = useState<string | null>(null);
   const [admins, setAdmins] = useState<any[]>([]);
   const { toast } = useToast();
-  
-  // Create validation schema with translated messages
+  const navigate = useNavigate();
+  const session = JSON.parse(localStorage.getItem('session') || '{}');
+  const currentEmail = session.email;
+  const currentAdmin = admins.find(a => a.email === currentEmail);
+  const currentRole = currentAdmin?.role || '';
+
+  useEffect(() => {
+    const storeId = localStorage.getItem('store_id');
+    const isSuperadmin = localStorage.getItem('superadmin');
+    if (!storeId && !isSuperadmin) {
+      navigate('/login');
+    }
+  }, [navigate]);
+
   const formSchema = z.object({
     name: z.string().min(2, {
       message: t("Name must be at least 2 characters."),
@@ -78,9 +90,8 @@ const Admins = () => {
       message: t("Password must be at least 8 characters."),
     }),
     role: z.string(),
-    
   });
-  
+
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: {
@@ -91,7 +102,22 @@ const Admins = () => {
     },
   });
 
-  // Update form when language changes
+  const [storeEmail, setStoreEmail] = useState('');
+
+  useEffect(() => {
+    const storeId = localStorage.getItem('store_id');
+    supabase
+      .from('stores')
+      .select('email')
+      .eq('store_id', storeId)
+      .single()
+      .then(({ data }) => {
+        if (data?.email) {
+          setStoreEmail(data.email);
+        }
+      });
+  }, []);
+
   useEffect(() => {
     form.reset(form.getValues());
   }, [language, form]);
@@ -101,65 +127,102 @@ const Admins = () => {
     queryFn: getAdminsData,
   });
 
-  // Initialize admins state with data from query
   useEffect(() => {
     if (data?.admins && admins.length === 0) {
       setAdmins(data.admins);
     }
   }, [data, admins]);
 
-  const handleSubmit = (values: z.infer<typeof formSchema>) => {
-    // In a real app, this would make an API call to create the admin
-    // For demo, we'll just update the local state
-    
-    // Create new admin object
+  const handleSubmit = async (values: z.infer<typeof formSchema>) => {
+    const storeId = localStorage.getItem('store_id');
+    const hashedPassword = await bcrypt.hash(values.password, 10);
+
+    const { data, error } = await supabase
+      .from('admins')
+      .insert([
+        {
+          store_id: storeId,
+          name: values.name,
+          email: values.email,
+          password: hashedPassword,
+          role: values.role
+        }
+      ])
+      .select();
+
+    if (error) {
+      toast({
+        title: "Error",
+        description: "Failed to add admin: " + error.message,
+      });
+      return;
+    }
+
     const newAdmin = {
-      id: `admin-${Date.now()}`,
+      id: data[0].id,
       name: values.name,
       email: values.email,
       role: values.role,
       lastLogin: new Date().toISOString(),
       status: 'Offline',
     };
-    
-    // Add to list
+
     setAdmins(prev => [...prev, newAdmin]);
-    
+
     toast({
       title: t("Admin added"),
-      description: t("{{name}} has been added as {{role}}.", { name: values.name, role: values.role }),
+      description: `${values.name} has been added as ${values.role}.`,
     });
-    
+
     setIsAddDialogOpen(false);
     form.reset();
   };
 
-  const handleDeleteAdmin = (adminId: string) => {
+  const handleDeleteAdmin = async (adminId: string) => {
     setSelectedAdminId(adminId);
     const admin = admins.find(a => a.id === adminId);
-    
-    // In a real app, this would make an API call to delete the admin
-    // For demo, we'll just update the local state
-    
-    // Remove from list
+
+    if (admin.email === storeEmail) {
+      toast({
+        title: "Not allowed",
+        description: "You cannot delete the store owner.",
+      });
+      setSelectedAdminId(null);
+      return;
+    }
+    const { error } = await supabase
+      .from('admins')
+      .delete()
+      .eq('id', adminId);
+
+    if (error) {
+      toast({
+        title: t("Error"),
+        description: t("Failed to delete admin."),
+      });
+      setSelectedAdminId(null);
+      return;
+    }
+
     setAdmins(prev => prev.filter(a => a.id !== adminId));
-    
+
     toast({
       title: t("Admin removed"),
-      description: t("{{name}} has been removed.", { name: admin?.name }),
+      description: `${admin?.name} has been removed.`,
     });
-    
+
     setSelectedAdminId(null);
   };
 
-  const formatDate = (dateString: string) => {
+  const formatDate = (dateString: string | null | undefined) => {
+    if (!dateString) return '—';
     const date = new Date(dateString);
-    // Use 'gregory' calendar explicitly for Arabic locale
-    return new Intl.DateTimeFormat(language === 'ar' ? 'ar-SA-u-ca-gregory' : 'en-US', { 
-      dateStyle: 'medium', 
-      timeStyle: 'short',
-      calendar: 'gregory'  // Force Gregorian calendar
-    }).format(date);
+    if (isNaN(date.getTime())) return '—';
+    return date.toLocaleDateString('en-US', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric'
+    });
   };
 
   const displayedAdmins = admins.length > 0 ? admins : data?.admins || [];
@@ -178,6 +241,7 @@ const Admins = () => {
           <CardHeader>
             <div className={`flex items-center justify-between ${rtl ? 'flex-row-reverse' : ''}`}>
               <CardTitle>{t("Admin Management")}</CardTitle>
+              {currentRole === 'owner' && (
               <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
                 <DialogTrigger asChild>
                   <Button variant="default" className={`flex items-center gap-2 ${rtl ? 'flex-row-reverse' : ''}`}>
@@ -189,7 +253,7 @@ const Admins = () => {
                   <DialogHeader>
                     <DialogTitle>{t("Add New Admin")}</DialogTitle>
                     <DialogDescription>
-                      {t("Add a new admin to your store. They'll receive an email invitation.")}
+                      {t("New admin can now log in using these credentials.")}
                     </DialogDescription>
                   </DialogHeader>
                   <Form {...form}>
@@ -264,6 +328,7 @@ const Admins = () => {
                   </Form>
                 </DialogContent>
               </Dialog>
+                            )}
             </div>
           </CardHeader>
           <CardContent>
@@ -285,8 +350,6 @@ const Admins = () => {
                       <TableHead>{t("Name")}</TableHead>
                       <TableHead>{t("Email")}</TableHead>
                       <TableHead>{t("Role")}</TableHead>
-                      <TableHead>{t("Status")}</TableHead>
-                      <TableHead>{t("Last Login")}</TableHead>
                       <TableHead className={rtl ? "text-left" : "text-right"}>{t("Actions")}</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -306,27 +369,9 @@ const Admins = () => {
                             )}
                           </div>
                         </TableCell>
-                        <TableCell>
-                          {admin.status === 'Online' ? (
-                            <div className="flex items-center gap-1">
-                              <div className="w-2 h-2 rounded-full bg-neon-green"></div>
-                              <span>{t("Online")}</span>
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-1">
-                              <div className="w-2 h-2 rounded-full bg-muted"></div>
-                              <span>{t("Offline")}</span>
-                            </div>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-1">
-                            <Calendar size={14} className="text-muted-foreground" />
-                            <span>{formatDate(admin.lastLogin)}</span>
-                          </div>
-                        </TableCell>
                         <TableCell className={rtl ? "text-left" : "text-right"}>
-                          {admin.role !== 'Owner' && (
+     {currentRole === 'owner' && admin.role !== 'owner' && admin.email !== currentEmail && (
+
                             <Button
                               variant="ghost"
                               size="icon"
@@ -356,9 +401,9 @@ const Admins = () => {
             <p className="text-sm">{t("Demo Mode: The data shown is sample data. Changes will not persist after page refresh.")}</p>
           </div>
         )}
-      </div>
-    </MainLayout>
-  );
-};
+        </div>
+      </MainLayout>
+    );
+  };
+  export default Admins;
 
-export default Admins;

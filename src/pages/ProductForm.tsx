@@ -29,11 +29,40 @@ import {
 } from '@/components/ui/table';
 import MainLayout from '@/components/layout/MainLayout';
 import { toast } from 'sonner';
-import { ArrowLeft, Trash, Plus, Edit, Check, AlertCircle, Users as UsersIcon, Eye, EyeOff } from 'lucide-react';
+import { ArrowLeft, Trash, Plus, Edit, Check, X, AlertCircle, Users as UsersIcon, Eye, EyeOff, ShoppingCart } from 'lucide-react';
+import { Label } from '@/components/ui/label';  
 import TwoFactorValidation from '@/components/TwoFactorValidation';
 import UserManagementDialog from '@/components/UserManagementDialog';
 import { useTranslation } from '@/hooks/use-translation';
 import { supabase } from '../supabaseClient'; // Ensure this import is at the top
+import CryptoJS from 'crypto-js';
+import { encrypt, decrypt } from '@/lib/crypto';
+import { Navigate } from 'react-router-dom';
+import sendOutOfStockAlert from '@/api/send-email';
+import ProductPicker from '@/components/ProductPicker';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+
+const RequireAuth = ({ children }: { children: JSX.Element }) => {
+  const storeId = localStorage.getItem('store_id');
+  if (!storeId) {
+    return <Navigate to="/login" replace />;
+  }
+  return children;
+};
+const toggleItemStyle = "w-full border border-white rounded-md bg-black text-white hover:bg-white/5";
+
+const ENCRYPTION_KEY ='789b4694b0df4c1b8535aaca7e1fe217c5523714277c3dc366b536b6e3d208be';
+interface ProductFormProps {
+  isAdmin?: boolean;
+}
+
+// Define the User type
+interface User {
+  number: string;
+  code_claimed?: number;
+  timestamp_code?: string;
+}
+
 
 // Function to check if using demo account
 const isDemoAccount = () => {
@@ -55,10 +84,16 @@ const formSchema = z.object({
   customReply: z.string().optional(),
   isPaused: z.boolean().default(false),
   isGiftCard: z.boolean().default(false),
+  twoFAType: z.enum(['email', 'totp']).default('totp'),  // Two-factor authentication type (Email or TOTP)
+  emailProvider: z.string().min(1, { message: "Please select an email provider" }),  // Email provider is now required
+  email: z.string()
+  .refine(value => value.includes('@') && value.includes('.'), {
+    message: "Must contain @ and a domain (.)"
+  })
+  .optional(),
+  account_type: z.enum(['PlayStation", "Steam", "Chatgpt", "Spotify", "Canva", "GamePass']).default('steam'),
   enableFileDelivery: z.boolean().default(false),
   
-  // ✅ الجديد:
-  deliverAsFile: z.boolean().default(false),
   file: z
     .instanceof(File)
     .optional()
@@ -69,6 +104,7 @@ const formSchema = z.object({
         message: "File must be a PDF or DOCX and ≤ 2MB",
       }
     ),
+  fileUrl: z.string().optional(), // ✅ this is the Supabase file URL you saved
 })
 .refine((data) => {
   // Only require twoFALimit if twoFAEnabled and limitTwoFAPerUser are both true
@@ -101,23 +137,79 @@ const formSchema = z.object({
   message: "Gift cards can only have 1 max user",
   path: ["maxUsers"]
 });
-const [file, setFile] = useState<File | null>(null);
+async function checkIfAllAccountsFull(productId: string, storeId: string) {
+  const { data: allAccounts, error } = await supabase
+    .from('accounts')
+    .select('status')
+    .eq('product_id', productId)
+    .eq('store_id', storeId);
+
+  if (error) return;
+
+  const allFull = allAccounts.length > 0 && allAccounts.every(acc => acc.status === 'full');
+
+  if (allFull) {
+    const { data: existingAlert } = await supabase
+      .from('alerts')
+      .select('id')
+      .eq('store_id', storeId)
+      .eq('product_id', productId)
+      .eq('type', 'out_of_stock')
+      .eq('dismissed', false)
+      .maybeSingle();
+
+    if (!existingAlert) {
+      await supabase.from('alerts').insert([
+        {
+          store_id: storeId,
+          product_id: productId,
+          type: 'out_of_stock',
+          message: 'تنبيه: المنتج نفدت حساباته تماماً.',
+        },
+      ]);
+      // TODO: send email + WhatsApp notification here
+    }
+  }
+}
 
 export default function ProductForm({ isAdmin = false }: ProductFormProps) {
   const navigate = useNavigate();
+useEffect(() => {
+  const storeId = localStorage.getItem('store_id');
+  const isSuperadmin = localStorage.getItem('superadmin');
+  if (!storeId && !isSuperadmin) {
+    navigate('/login');
+  }
+  
+}, [navigate]);
   const { id } = useParams();
   const isEditing = !!id;
+  const [showProductPicker, setShowProductPicker] = useState(false);
+  const [selectedProduct, setSelectedProduct] = useState<{ id: number, name: string, image: string } | null>(null);
   const [activeTab, setActiveTab] = useState('details');
   const [accounts, setAccounts] = useState<any[]>([]);
   const [isAddingAccount, setIsAddingAccount] = useState(false);
+  const [accountType, setAccountType] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [showEditPassword, setShowEditPassword] = useState(false); 
+const [visiblePasswords, setVisiblePasswords] = useState<Record<string, boolean>>({});
+const [visibleAppPasswords, setVisibleAppPasswords] = useState<Record<string, boolean>>({});
+const [showEditAppPassword, setShowEditAppPassword] = useState(false);
+  const [twoFAType, setTwoFAType] = useState('');
+  const [emailProvider, setEmailProvider] = useState('');
+  const [twoFAEmailSender, setTwoFAEmailSender] = useState('');
   const [newAccount, setNewAccount] = useState({
+    
     email: '',
     password: '',
     twoFASecret: '',
+    appPassword: '', // ✅ جديد
+    twoFAEmail: '', // ✅ جديد
     status: 'active',
     maxUsers: 1,
     code: ''
   });
+  
   const [editingAccount, setEditingAccount] = useState<string | null>(null);
   const [editedAccount, setEditedAccount] = useState<any>(null);
   const [validating2FA, setValidating2FA] = useState(false);
@@ -126,15 +218,18 @@ export default function ProductForm({ isAdmin = false }: ProductFormProps) {
   const [showUserManagement, setShowUserManagement] = useState(false);
   const [selectedAccount, setSelectedAccount] = useState<any>(null);
   // Password visibility states
-  const [showPassword, setShowPassword] = useState(false);
-  const [showEditPassword, setShowEditPassword] = useState(false);
-  const { t } = useTranslation();
+
+const { t, language, rtl } = useTranslation();
 
   // Form setup
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     mode: 'onChange',
-    defaultValues: getDefaultStoreValues(),
+    defaultValues: {
+      twoFAType: 'totp',  // Default value for 2FA type
+      platform: 'steam', // Default platform
+      emailProvider: '', // Default empty email provider
+    },
   });
 
   // Fetch data for editing
@@ -148,10 +243,10 @@ export default function ProductForm({ isAdmin = false }: ProductFormProps) {
               setAccounts([]);
               return;
             }
-            
+
             const stores = JSON.parse(localStorage.getItem('stores') || '[]');
             const store = stores.find((s: any) => s.id === id);
-            
+
             if (store) {
               form.reset({
                 name: store.name,
@@ -173,34 +268,50 @@ export default function ProductForm({ isAdmin = false }: ProductFormProps) {
             }
           } else {
             if (!isDemoAccount()) {
-              form.reset(getDefaultStoreValues());
-              setAccounts([]);
+              const storeId = localStorage.getItem('store_id');
+                    const { data, error } = await supabase
+                      .from('products')
+                      .select('*')
+                      .eq('id', id)
+                      .single();
+
+              if (error || !data) {
+                toast.error('Product not found in Supabase');
+                navigate('/products');
+                return;
+              }
+
+              form.reset({
+                
+                name: data.name,
+                sallaUrl: data.salla_url,
+                maxUsers: data.max_users ?? 1,
+                infiniteUsers: data.infinite_users,
+                expireDays: data.expire_days,
+                infiniteExpiry: data.infinite_expiry,
+                twoFAEnabled: data.two_fa_enabled,
+                limitTwoFAPerUser: data.limit_two_fa_per_user,
+                twoFALimit: data.two_fa_limit,
+                customReply: data.custom_reply,
+                isPaused: data.is_paused,
+                twoFAType: data.two_fa_type ?? 'totp',
+                emailProvider: data.email_provider ?? '',
+                email: data.two_fa_email_sender ?? '', 
+                account_type: data.account_type ?? 'steam',
+                isGiftCard: data.is_gift_card,
+                enableFileDelivery: data.enable_file_delivery || false,
+                file: undefined, // ❌ don't try to fake a File
+                fileUrl: data.file_url || undefined, // leave file blank initially
+              });
               return;
             }
-            
-            // Debug localStorage
-            console.log('LocalStorage keys:', Object.keys(localStorage));
-            
-            // Get products from localStorage
+
             const productsStr = localStorage.getItem('products');
-            console.log('Raw products from localStorage:', productsStr);
-            
             const products = JSON.parse(productsStr || '[]');
-            console.log('Parsed products from localStorage:', products);
-            console.log('All products:', products.map(p => ({id: p.id, name: p.name})));
-            
-            // Find the product by ID
             const product = products.find((p: any) => p.id === id);
-            console.log('Looking for product with ID:', id);
-            console.log('Found product:', product);
-            
+
             if (product) {
-              // Determine if it's a gift card
               const isGiftCard = product.is_gift_card || product.isGiftCard || false;
-              console.log('Product is gift card:', isGiftCard);
-              
-              // Create a normalized representation of the product data
-              // Handle both snake_case and camelCase properties to ensure we get all values
               const formValues = {
                 name: product.name || '',
                 sallaUrl: product.salla_url || product.sallaUrl || '',
@@ -215,16 +326,19 @@ export default function ProductForm({ isAdmin = false }: ProductFormProps) {
                 isPaused: product.is_paused ?? product.isPaused ?? false,
                 isGiftCard: isGiftCard
               };
-              
-              // Reset the form with the values
-              console.log('Resetting form with values:', formValues);
               form.reset(formValues);
-              
-              // Fetch accounts for this product
+
               const allAccounts = JSON.parse(localStorage.getItem('accounts') || '[]');
-              const productAccounts = allAccounts.filter((account: any) => account.product_id === id);
-              console.log('Found accounts for product:', productAccounts);
-              setAccounts(productAccounts);
+              const productAccounts = allAccounts
+              .filter((account: any) => account.product_id === id)
+              .map((account: any) => ({
+                ...account,
+                email: account.email ? decrypt(account.email) : '',
+                password: account.password ? decrypt(account.password) : '',
+                two_fa_secret: account.two_fa_secret ? decrypt(account.two_fa_secret) : '',
+              }));
+            
+            setAccounts(productAccounts);
             } else {
               toast.error('Product not found');
               navigate('/products');
@@ -237,25 +351,16 @@ export default function ProductForm({ isAdmin = false }: ProductFormProps) {
       };
 
       fetchData();
-      
-      // Set up an interval to automatically reload data every 2 seconds when editing
-      const autoReloadInterval = setInterval(() => {
-        if (isEditing) {
-          console.log("Auto-reloading product data...");
-          reloadProduct(false); // Pass false to prevent showing toast messages on auto-reload
-        }
-      }, 2000);
-      
-      // Clean up the interval when component unmounts
-      return () => {
-        clearInterval(autoReloadInterval);
-      };
     } else {
-      // For new product/store, set default values
       form.reset(getDefaultStoreValues());
     }
   }, [isEditing, isAdmin, form, id, navigate]);
-
+      // Set up an interval to automatically reload data every 2 seconds when editing
+      const autoReloadInterval = setInterval(() => {
+        console.log("Auto-reloading product data...");
+        reloadProduct(false);
+      }, 200000);
+    
   // Update the accounts display when isGiftCard changes
   useEffect(() => {
     // Only update if we're actually on the accounts tab
@@ -266,81 +371,200 @@ export default function ProductForm({ isAdmin = false }: ProductFormProps) {
   }, [form.watch('isGiftCard')]);
 
   // Make sure we save form changes even when submitting directly
-  const onSubmit = async (values: z.infer<typeof formSchema>, skipNavigation: boolean = false) => {
-    try {
-      const { data, error } = await supabase
+  function extractProductId(sallaUrl: string) {
+    const match = sallaUrl.match(/p(\d+)$/);
+    return match ? match[1] : '';
+  }
+async function uploadFileToSupabase(file: File, productId: string) {
+  const storeId = localStorage.getItem('store_id');
+  const fileExt = file.name.split('.').pop();
+  const filePath = `${storeId}/${productId}/${Date.now()}.${fileExt}`;
+  if (!file) throw new Error("No file selected!");
+
+  console.log("Uploading file:", file.name, file.type, file.size);
+  const { error } = await supabase.storage
+    .from('productfiles') // bucket name
+    .upload(filePath, file, {
+      cacheControl: '3600',
+      upsert: false,
+    });
+
+  if (error) {
+    console.error('Error uploading file:', error);
+    throw new Error('File upload failed');
+  }
+
+  // هذا الذي يخزن في file_url (مجرد المسار، وليس رابط كامل)
+  return filePath;
+}
+const handleFormSubmit = async (values: z.infer<typeof formSchema>) => {
+  try {
+    await onSubmit(values);
+    toast.success('Product created successfully!');
+    navigate('/products');
+  } catch (error) {
+    console.error('Submission error:', error);
+    toast.error('Failed to create product. Please check your inputs.');
+  }
+};
+// إضافة أو تحديث المنتج، مع رفع أو حذف الملف حسب الحالة
+const onSubmit = async (values: z.infer<typeof formSchema>, skipNavigation: boolean = false) => {
+  try {
+    const storeId = localStorage.getItem('store_id');
+    const productId = id; // إذا كنت تعدل منتج موجود
+
+    let uploadedFileUrl = values.fileUrl ?? null;
+    let maxUsersToSave = values.infiniteUsers ? null : (values.maxUsers ?? 1);
+    // (1) رفع ملف جديد إذا فعّلت file delivery ورفعت ملف جديد
+    if (values.enableFileDelivery && file && !uploadedFileUrl) {
+      try {
+        uploadedFileUrl = await uploadFileToSupabase(file, id ?? 'new');
+        form.setValue('fileUrl', uploadedFileUrl); // مهم للواجهة فقط
+      } catch (err) {
+        toast.error('File upload failed, please try again');
+        return; // أوقف العملية
+      }
+    }
+
+    // (2) حذف الملف من Supabase إذا عطّلت file delivery أو حذفته
+    if (!values.enableFileDelivery && values.fileUrl) {
+      await supabase.storage.from('productfiles').remove([values.fileUrl]);
+      uploadedFileUrl = null; // امسح المتغير قبل الحفظ
+      form.setValue('fileUrl', null);
+    }
+
+    // (3) تحديث منتج موجود
+    if (productId) {
+      const { error } = await supabase
         .from('products')
-        .insert([
-          {
-            name: values.name,
-            salla_url: values.sallaUrl,
-            max_users: values.maxUsers,
-            infinite_users: values.infiniteUsers,
-            expire_days: values.expireDays,
-            infinite_expiry: values.infiniteExpiry,
-            two_fa_enabled: values.twoFAEnabled,
-            limit_two_fa_per_user: values.limitTwoFAPerUser,
-            two_fa_limit: values.twoFALimit,
-            custom_reply: values.customReply,
-            is_paused: values.isPaused,
-            is_gift_card: values.isGiftCard,
-          },
-        ]);
+        .update({
+          name: values.name,
+          salla_url: values.sallaUrl,
+          max_users: maxUsersToSave,
+          infinite_users: values.infiniteUsers,
+          expire_days: values.expireDays,
+          infinite_expiry: values.infiniteExpiry,
+          two_fa_enabled: values.twoFAEnabled,
+          limit_two_fa_per_user: values.limitTwoFAPerUser,
+          two_fa_limit: values.twoFALimit,
+          custom_reply: values.customReply,
+          is_paused: values.isPaused,
+          is_gift_card: values.isGiftCard,
+          enable_file_delivery: values.enableFileDelivery,
+          file_url: uploadedFileUrl || null, // دائما استخدم المسار المحدث
+          two_fa_type: values.twoFAType,
+          email_provider: values.emailProvider,
+          two_fa_email_sender: values.email,
+          account_type: values.account_type,
+        })
+        .eq('id', productId);
 
       if (error) {
-        toast.error('Error saving product');
-      } else {
-        toast.success('Product saved successfully');
-        if (!skipNavigation) navigate('/products');
+        console.error('Supabase update error:', error);
+        toast.error('Error updating product: ' + error.message);
+        return;
       }
-    } catch (error) {
-      console.error('Error:', error);
-      toast.error('An unexpected error occurred');
+ if (maxUsersToSave !== null) {
+    const { error: accountsUpdateError } = await supabase
+      .from('accounts')
+      .update({ max_users: maxUsersToSave })
+      .eq('product_id', productId);
+
+    if (accountsUpdateError) {
+      toast.error('حدث خطأ أثناء تحديث عدد المستخدمين للحسابات');
+      // فقط سجل الخطأ، لا توقف العملية
+      console.error('Accounts max_users update error:', accountsUpdateError);
     }
-  };
+  }
+      toast.success('Product updated successfully');
+    } else {
+      // (4) إضافة منتج جديد
+      const extractedProductId = extractSallaProductId(values.sallaUrl);
 
-  // This version is used with form.handleSubmit
-  const handleFormSubmit = async (values: z.infer<typeof formSchema>) => {
-    await onSubmit(values, false);
-  };
+      const { data, error } = await supabase
+        .from('products')
+        .insert([{
+          store_id: storeId,
+          product_id: extractedProductId,
+          name: values.name,
+          salla_url: values.sallaUrl,
+          max_users: values.maxUsers,
+          infinite_users: values.infiniteUsers,
+          expire_days: values.expireDays,
+          infinite_expiry: values.infiniteExpiry,
+          two_fa_enabled: values.twoFAEnabled,
+          limit_two_fa_per_user: values.limitTwoFAPerUser,
+          two_fa_limit: values.twoFALimit,
+          custom_reply: values.customReply,
+          is_paused: values.isPaused,
+          is_gift_card: values.isGiftCard,
+          enable_file_delivery: values.enableFileDelivery,
+          file_url: uploadedFileUrl || null,
+          two_fa_type: values.twoFAType,
+          email_provider: values.emailProvider,
+          two_fa_email_sender: values.email,
+        }])
+        .select();
 
-  const handleDeleteItem = () => {
-    if (confirm(`Are you sure you want to delete this ${isAdmin ? 'store' : 'product'}?`)) {
-      try {
-        // Get existing products from localStorage
-        const existingProducts = JSON.parse(localStorage.getItem('products') || '[]');
-        
-        // Filter out the product to delete
-        const updatedProducts = existingProducts.filter((product: any) => product.id !== id);
-        
-        // Save the updated products array
-        localStorage.setItem('products', JSON.stringify(updatedProducts));
-        
-        console.log('Deleted product with ID:', id);
-        console.log('Updated products in localStorage:', updatedProducts);
-        
-        // Also delete any associated accounts
-        if (!isAdmin) {
-          const existingAccounts = JSON.parse(localStorage.getItem('accounts') || '[]');
-          const updatedAccounts = existingAccounts.filter((account: any) => account.product_id !== id);
-          localStorage.setItem('accounts', JSON.stringify(updatedAccounts));
-          console.log('Deleted associated accounts for product ID:', id);
-        }
-        
-        toast.success(`${isAdmin ? 'Store' : 'Product'} deleted successfully`);
-        navigate(isAdmin ? '/admin/stores' : '/products');
-      } catch (error) {
-        console.error('Error deleting:', error);
-        toast.error(`Failed to delete ${isAdmin ? 'store' : 'product'}`);
+      if (error) {
+        console.error('Supabase insert error:', error);
+        toast.error('Error creating product: ' + error.message);
+        return;
       }
-    }
-  };
 
+      if (!data || data.length === 0) {
+        toast.error('Failed to receive product data after insert.');
+        return;
+      }
+
+      toast.success('Product created successfully');
+      navigate('/products', { replace: true });
+    }
+
+    if (!skipNavigation) {
+      navigate('/products');
+    }
+  } catch (error) {
+    console.error('Error:', error);
+    toast.error('An unexpected error occurred');
+  }
+};
+
+// حذف منتج مع حذف الملف من Supabase لو كان موجود
+const handleDeleteItem = async (productId: string) => {
+  const confirmed = window.confirm('هل أنت متأكد من حذف هذا المنتج؟');
+  if (!confirmed) return;
+
+  // Get store_id (from session/localStorage or JWT if needed)
+  const storeId = localStorage.getItem('store_id');
+
+  // Optional: log it for debugging
+  console.log('Deleting product', productId, 'with store_id', storeId);
+
+  // Call Supabase to delete the product
+  const { error } = await supabase
+    .from('products')
+    .delete()
+    .eq('id', productId)
+    .eq('store_id', storeId);
+
+  if (error) {
+    console.error('Error deleting product:', error);
+    alert('خطأ أثناء حذف المنتج: ' + error.message);
+    return;
+  }
+
+  alert('تم حذف المنتج بنجاح');
+    navigate('/products', { replace: true });
+};
+// لإرسال الرابط المباشر للعميل (مثال)
+function getDirectFileUrl(fileUrl: string | null) {
+  if (!fileUrl) return null;
+  return `https://rrmrownqurlhnngqeoqm.supabase.co/storage/v1/object/public/productfiles/${fileUrl}`;
+}
   const handleAddAccount = async () => {
     try {
       const isGiftCard = form.watch('isGiftCard');
-      
-      // Add validation for account fields
       if (isGiftCard) {
         if (!newAccount.code) {
           toast.error(t('Gift card code is required'));
@@ -352,116 +576,214 @@ export default function ProductForm({ isAdmin = false }: ProductFormProps) {
           return;
         }
       }
-
-      // When adding an account, check if it has a 2FA secret that needs validation
+  
       if (newAccount.twoFASecret && !isGiftCard && form.watch('twoFAEnabled')) {
-        console.log("Starting 2FA validation process with secret:", newAccount.twoFASecret);
         setAccountToValidate({
           ...newAccount,
-          // Initialize an empty users array for new accounts
-          users: []
+          users: [],
         });
         setValidating2FA(true);
         return;
       }
-
-      // If no 2FA secret or it's a gift card, proceed with saving
+  
       await saveAccount({
         ...newAccount,
-        // Initialize an empty users array for new accounts
         users: []
       });
+  
+      await checkOutOfStockAlert(id!, storeId!, form.getValues().name);
+  
     } catch (error) {
       console.error('Error adding account:', error);
       toast.error('Failed to add account');
     }
   };
+  
+/* ───────────────────── saveAccount (جديد) ───────────────────── */
+const saveAccount = async (accountData: any) => {
+  const isGiftCard = form.watch("isGiftCard");
+  const storeId   = localStorage.getItem("store_id");
 
-  const saveAccount = async (accountData: any) => {
-    const isGiftCard = form.watch('isGiftCard');
-    
-    // Create new account with mock ID
-    const newAccountWithId = {
-      id: `account-${Date.now()}`,
-      product_id: id || 'new',
-      store_id: 'store-1', // This will come from the session later
-      email: isGiftCard ? '' : accountData.email,
-      password: isGiftCard ? '' : accountData.password,
-      two_fa_secret: isGiftCard ? '' : accountData.twoFASecret,
-      code: isGiftCard ? accountData.code : '',
-      status: accountData.status,
-      max_users: accountData.maxUsers,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      // Add users array
-      users: accountData.users || []
+  /* ► 1. تكوين الحمولة المُشفَّرة لإرسالها إلى Supabase */
+  const payload = {
+    product_id   : id,
+    store_id     : storeId,
+    email        : isGiftCard ? "" : encrypt(accountData.email),
+    password     : isGiftCard ? "" : encrypt(accountData.password),
+    two_fa_secret:
+      isGiftCard
+        ? ""
+        : form.watch("twoFAType") === "totp"
+        ? encrypt(accountData.twoFASecret)
+        : "",
+    fa_email     : form.watch("twoFAType") === "email" ? accountData.twoFAEmail : "",
+    fa_app_pass  : form.watch("twoFAType") === "email" ? accountData.appPassword : "",
+    fa_type      : form.watch("twoFAType"),
+    code         : isGiftCard ? encrypt(accountData.code) : "",
+    status       : accountData.status,
+    max_users    : form.watch("maxUsers") || 1,
+    created_at   : new Date().toISOString(),
+    updated_at   : new Date().toISOString(),
+    users        : accountData.users || [],
+  };
+
+  /* ► 2. الحفظ في Supabase واسترجاع الـ id الجديد */
+  const { data, error } = await supabase
+    .from("accounts")
+    .insert([payload])
+    .select("id")
+    .single();
+
+  if (error) {
+    console.error("Supabase insert error:", error);
+    toast.error("Error saving account: " + error.message);
+    return;
+  }
+
+  /* ► 3. إنشاء نسخة محليّة (plain / مفكَّكة التشفير) للعرض */
+  const localAccount = {
+    ...payload,
+    id          : data.id,
+    email       : accountData.email,
+    password    : accountData.password,
+    two_fa_secret:
+      form.watch("twoFAType") === "totp" ? accountData.twoFASecret : "",
+    twoFAEmail  : form.watch("twoFAType") === "email" ? accountData.twoFAEmail : "",
+    appPassword : form.watch("twoFAType") === "email" ? accountData.appPassword : "",
+  };
+
+  /* ► 4. تحديث الحالة والـ UI */
+  setAccounts((prev) => [...prev, localAccount]);
+  setIsAddingAccount(false);
+  setNewAccount({
+    email: "",
+    password: "",
+    twoFASecret: "",
+    twoFAEmail: "",
+    appPassword: "",
+    code: "",
+    status: "active",
+    maxUsers: 1,
+  });
+  toast.success("Account added successfully");
+};
+
+/* ────────────────── handleEditAccount (جديد) ────────────────── */
+const handleEditAccount = async (accountId: string, updatedData: any) => {
+  try {
+    const isGiftCard = form.watch("isGiftCard");
+
+    /* ► 1. تكوين البيانات المُشفَّرة لإرسالها إلى Supabase */
+    const payload = {
+      email        : isGiftCard ? "" : encrypt(updatedData.email),
+      password     : isGiftCard ? "" : encrypt(updatedData.password),
+      two_fa_secret:
+        isGiftCard
+          ? ""
+          : form.watch("twoFAType") === "totp"
+          ? encrypt(updatedData.twoFASecret)
+          : "",
+      fa_email     : form.watch("twoFAType") === "email" ? updatedData.twoFAEmail : "",
+      fa_app_pass  : form.watch("twoFAType") === "email" ? updatedData.appPassword : "",
+      fa_type      : form.watch("twoFAType"),
+      code         : isGiftCard ? encrypt(updatedData.code) : "",
+      status       : updatedData.status,
+      max_users    : updatedData.maxUsers,
+      users        : updatedData.users || [],
+      updated_at   : new Date().toISOString(),
     };
-    
-    // Save to local storage
-    const existingAccounts = JSON.parse(localStorage.getItem('accounts') || '[]');
-    localStorage.setItem('accounts', JSON.stringify([...existingAccounts, newAccountWithId]));
-    
-    // Update accounts state
-    setAccounts([...accounts, newAccountWithId]);
-    setIsAddingAccount(false);
-    setNewAccount({
-      email: '',
-      password: '',
-      twoFASecret: '',
-      code: '',
-      status: 'active',
-      maxUsers: 1
-    });
-    
-    toast.success('Account added successfully');
-  };
 
-  const handleDeleteAccount = async (accountId: string) => {
-    try {
-      // Remove from local storage
-      const existingAccounts = JSON.parse(localStorage.getItem('accounts') || '[]');
-      const updatedAccounts = existingAccounts.filter((account: any) => account.id !== accountId);
-      localStorage.setItem('accounts', JSON.stringify(updatedAccounts));
-      
-      // Remove account from state
-      setAccounts(accounts.filter(account => account.id !== accountId));
-      toast.success('Account removed successfully');
-    } catch (error) {
-      console.error('Error removing account:', error);
-      toast.error('Failed to remove account');
+    /* ► 2. تحديث الصفّ في Supabase */
+    const { error } = await supabase
+      .from("accounts")
+      .update(payload)
+      .eq("id", accountId);
+
+    if (error) {
+      console.error("Error updating account:", error);
+      toast.error("Failed to update account");
+      return;
     }
-  };
 
-  // Add function to edit account
-  const handleEditAccount = (accountId: string, updatedData: any) => {
-    try {
-      // Find the existing account to preserve users if not provided in updatedData
-      const existingAccount = accounts.find(acc => acc.id === accountId);
-      const updatedUserData = {
-        ...updatedData,
-        // Make sure users data is preserved, either from updated data or existing account
-        users: updatedData.users || (existingAccount ? existingAccount.users || [] : [])
-      };
-      
-      // Update in local storage
-      const existingAccounts = JSON.parse(localStorage.getItem('accounts') || '[]');
-      const updatedAccounts = existingAccounts.map((account: any) => 
-        account.id === accountId ? { ...account, ...updatedUserData } : account
-      );
-      localStorage.setItem('accounts', JSON.stringify(updatedAccounts));
-      
-      // Update in state
-      setAccounts(accounts.map(account => 
-        account.id === accountId ? { ...account, ...updatedUserData } : account
-      ));
-      
-      toast.success('Account updated successfully');
-    } catch (error) {
-      console.error('Error updating account:', error);
-      toast.error('Failed to update account');
+    /* ► 3. نسخة محليّة مفكَّكة التشفير لتحديث الجدول فورًا */
+    const localAccount = {
+      ...updatedData,
+      id: accountId,
+      twoFAEmail : updatedData.twoFAEmail,
+      appPassword: updatedData.appPassword,
+      two_fa_secret:
+        form.watch("twoFAType") === "totp" ? updatedData.twoFASecret : "",
+    };
+
+    setAccounts((prev) =>
+      prev.map((acc) => (acc.id === accountId ? { ...acc, ...localAccount } : acc))
+    );
+
+    toast.success("Account updated successfully");
+  } catch (err) {
+    console.error("Error updating account:", err);
+    toast.error("Failed to update account");
+  }
+};
+async function checkOutOfStockAlert(productId: string, storeId: string, productName: string) {
+  const { data: accounts, error: fetchError } = await supabase
+    .from('accounts')
+    .select('status')
+    .eq('product_id', productId)
+    .eq('store_id', storeId);
+
+  if (fetchError) {
+    console.error('Error checking out-of-stock:', fetchError);
+    return;
+  }
+
+  const allFull = accounts.every((a) => a.status === 'full');
+
+  if (allFull) {
+    // 1. Check if alert already exists
+    const { data: existingAlert } = await supabase
+      .from('alerts')
+      .select('id')
+      .eq('store_id', storeId)
+      .eq('product_id', productId)
+      .eq('type', 'out_of_stock')
+      .eq('dismissed', false)
+      .maybeSingle();
+
+    if (!existingAlert) {
+      // 2. Insert dashboard alert
+      await supabase.from('alerts').insert([
+        {
+          store_id: storeId,
+          product_id: productId,
+          type: 'out_of_stock',
+          message: `تنبيه: المنتج "${productName}" نفد من الحسابات.`
+        }
+      ]);
+
+      // 3. Get store email from Supabase
+      const { data: storeData, error: storeError } = await supabase
+        .from('stores')
+        .select('email, name')
+        .eq('id', storeId)
+        .single();
+
+      if (storeData && storeData.email) {
+        // 4. Send email using Next.js API route
+        await fetch('/api/send-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            to: storeData.email,
+            subject: `تنبيه: منتجك "${productName}" نفد من الحسابات`,
+            text: `مرحبًا ${storeData.name}،\n\nنود إعلامك بأن المنتج "${productName}" قد نفدت منه الحسابات بالكامل.\n\nالرجاء تعبئة المخزون في أقرب وقت لتجنب توقف المبيعات.`,
+          }),
+        });
+      }
     }
-  };
-
+  }
+}
+ 
   // Helper function to extract product ID from Salla URL
   const extractSallaProductId = (url: string) => {
     console.log('extractSallaProductId called with:', url);
@@ -526,19 +848,22 @@ export default function ProductForm({ isAdmin = false }: ProductFormProps) {
   // Add this function to handle starting account edit
   const startEditAccount = (account: any) => {
     const isGiftCard = form.watch('isGiftCard');
-    
-    setEditingAccount(account.id);
-    setEditedAccount({
-      email: account.email || '',
-      password: account.password || '',
-      twoFASecret: account.two_fa_secret || '',
-      code: account.code || '',
-      maxUsers: account.max_users || 1,
-      status: account.status || 'active',
-      // Add users data
-      users: account.users || []
-    });
-  };
+    console.log('🔍 Editing account:', account);       // ✅ داخل الدالة
+    console.log('📧 2FA Email:', account.twoFAEmail);  // ✅
+    console.log('🔑 App Password:', account.appPassword);  // ✅
+      setEditingAccount(account.id);
+      setEditedAccount({
+    email: account.email || '',
+    password: account.password || '',
+    twoFASecret: account.two_fa_secret || '',
+    code: account.code || '',
+twoFAEmail: account.twoFAEmail || account.fa_email || '',
+appPassword: account.appPassword || account.fa_app_pass || '',
+    maxUsers: account.max_users || 1,
+    status: account.status || 'active',
+    users: account.users || []
+  });
+};
 
   // Add this function to handle saving account edits
   const saveAccountEdit = () => {
@@ -550,6 +875,8 @@ export default function ProductForm({ isAdmin = false }: ProductFormProps) {
       password: isGiftCard ? '' : editedAccount.password,
       two_fa_secret: isGiftCard ? '' : editedAccount.twoFASecret,
       code: isGiftCard ? editedAccount.code : '',
+      twoFAEmail: editedAccount.twoFAEmail,   // ⭐️ مضاف
+      appPassword: editedAccount.appPassword,
       max_users: editedAccount.maxUsers,
       status: editedAccount.status,
       // Preserve users data
@@ -648,74 +975,78 @@ export default function ProductForm({ isAdmin = false }: ProductFormProps) {
   };
 
   // Update an account's user list
-  const handleUpdateUsers = (accountId: string, updatedUsers: User[]) => {
+  const handleUpdateUsers = async (accountId: string, updatedUsers: any[]) => {
     try {
-      // Update in local storage
-      const existingAccounts = JSON.parse(localStorage.getItem('accounts') || '[]');
-      const updatedAccounts = existingAccounts.map((account: any) => 
-        account.id === accountId ? { ...account, users: updatedUsers } : account
-      );
-      localStorage.setItem('accounts', JSON.stringify(updatedAccounts));
-      
-      // Update in state
-      setAccounts(accounts.map(account => 
-        account.id === accountId ? { ...account, users: updatedUsers } : account
-      ));
-      
-      // Update selected account if it's currently being displayed
-      if (selectedAccount && selectedAccount.id === accountId) {
-        setSelectedAccount({ ...selectedAccount, users: updatedUsers });
+      const { error } = await supabase
+        .from('accounts')
+        .update({ users: updatedUsers })
+        .eq('id', accountId);
+  
+      if (error) {
+        console.error('Supabase update error:', error);
+        toast.error('Failed to update users in Supabase');
+        return;
       }
-      
-      toast.success('Account users updated successfully');
+  
+      setAccounts(prev =>
+        prev.map(acc => acc.id === accountId ? { ...acc, users: updatedUsers } : acc)
+      );
+  
+      toast.success('Users updated successfully');
     } catch (error) {
-      console.error('Error updating account users:', error);
-      toast.error('Failed to update account users');
+      console.error('Error updating users:', error);
+      toast.error('Error updating users');
     }
   };
-
   // Delete a user from an account
-  const handleDeleteUser = (accountId: string, userNumber: string) => {
-    try {
-      const account = accounts.find(a => a.id === accountId);
-      if (!account || !account.users) return;
-      
-      const updatedUsers = account.users.filter((user: User) => user.number !== userNumber);
-      handleUpdateUsers(accountId, updatedUsers);
-      
-      toast.success('User deleted successfully');
-    } catch (error) {
-      console.error('Error deleting user:', error);
-      toast.error('Failed to delete user');
-    }
+  const handleDeleteUser = async (accountId: string, userNumber: string) => {
+    const account = accounts.find((a) => a.id === accountId);
+    if (!account || !account.users) return;
+  
+    const updatedUsers = account.users.filter((u) => u.number !== userNumber);
+    await handleUpdateUsers(accountId, updatedUsers);
   };
-
   // Reset 2FA limit for a user
-  const handleResetUserTwoFALimit = (accountId: string, userNumber: string) => {
+  const handleResetUserTwoFALimit = async (accountId: string, userNumber: string) => {
     try {
-      const account = accounts.find(a => a.id === accountId);
+      const account = accounts.find((a) => a.id === accountId);
       if (!account || !account.users) return;
-      
+  
       const updatedUsers = account.users.map((user: User) => {
         if (user.number === userNumber) {
           return {
             ...user,
-            code_claimed: 1, // Reset to 1
-            timestamp_code: new Date().toISOString() // Update timestamp
+            code_claimed: 0, // ✅ إعادة التعيين إلى 0
+            timestamp_code: new Date().toISOString(),
           };
         }
         return user;
       });
-      
-      handleUpdateUsers(accountId, updatedUsers);
-      
-      toast.success('User 2FA limit reset successfully');
+  
+      const { error } = await supabase
+        .from('accounts')
+        .update({ users: updatedUsers })
+        .eq('id', accountId);
+  
+      if (error) {
+        console.error('Error updating user limit in Supabase:', error);
+        toast.error('Failed to update user limit');
+        return;
+      }
+  
+      // تحديث الحالة المحلية
+      setAccounts(
+        accounts.map((acc) =>
+          acc.id === accountId ? { ...acc, users: updatedUsers } : acc
+        )
+      );
+  
+      toast.success('2FA user limit reset successfully');
     } catch (error) {
-      console.error('Error resetting user 2FA limit:', error);
-      toast.error('Failed to reset user 2FA limit');
+      console.error('Error resetting 2FA limit:', error);
+      toast.error('An unexpected error occurred');
     }
   };
-
   // Open the user management dialog
   const openUserManagement = (account: any) => {
     setSelectedAccount(account);
@@ -744,6 +1075,8 @@ export default function ProductForm({ isAdmin = false }: ProductFormProps) {
         twoFALimit: 3,
         customReply: 'Thank you for your purchase! Your account details will be sent to you shortly.',
         isPaused: false,
+        twoFAType: 'totp',
+        platform: 'steam',
         isGiftCard: false
       };
     }
@@ -805,8 +1138,16 @@ export default function ProductForm({ isAdmin = false }: ProductFormProps) {
           
           // Also reload accounts
           const allAccounts = JSON.parse(localStorage.getItem('accounts') || '[]');
-          const productAccounts = allAccounts.filter((account: any) => account.product_id === id);
-          setAccounts(productAccounts);
+          const productAccounts = allAccounts
+          .filter((account: any) => account.product_id === id)
+          .map((account: any) => ({
+            ...account,
+            email: account.email ? decrypt(account.email) : '',
+            password: account.password ? decrypt(account.password) : '',
+            two_fa_secret: account.two_fa_secret ? decrypt(account.two_fa_secret) : '',
+          }));
+        
+        setAccounts(productAccounts);
           
           if (showToast) {
             toast.success('Product data reloaded');
@@ -839,643 +1180,1026 @@ export default function ProductForm({ isAdmin = false }: ProductFormProps) {
       };
     }
   }, [isEditing, id]);
+  const [storeId, setStoreId] = useState<string | null>(null);
+  const [file, setFile] = useState<File | null>(null);
+  useEffect(() => {
+    const id = localStorage.getItem('store_id');
+    if (id) setStoreId(id);
+  
+  }, []);
 
-  return (
-    <MainLayout isAdmin={isAdmin}>
-      <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Button 
-              variant="ghost" 
-              size="icon" 
-              onClick={() => navigate(isAdmin ? '/admin/stores' : '/products')}
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </Button>
-            <h1 className="text-2xl font-bold">{t(formTitle)}</h1>
-          </div>
-          
-          <div className="flex items-center gap-2">
-            {isEditing && (
-              <Button variant="destructive" onClick={handleDeleteItem}>
-                <Trash className="h-4 w-4 mr-2" />
-                {t('Delete')}
-              </Button>
-            )}
-          </div>
+useEffect(() => {
+  const fetchAccounts = async () => {
+    const storeId = localStorage.getItem('store_id');
+    if (!id || !storeId) return;
+
+    const { data, error } = await supabase
+      .from('accounts')
+      .select('id, email, password, code, status, max_users, users, two_fa_secret, fa_email, fa_app_pass')
+      .eq('product_id', id)
+      .eq('store_id', storeId);
+
+    if (error) {
+      console.error('Error fetching accounts:', error);
+    } else {
+      const decrypted = data.map(acc => ({
+        id: acc.id,
+        email: decrypt(acc.email || ''),
+        password: decrypt(acc.password || ''),
+        two_fa_secret: decrypt(acc.two_fa_secret || ''),
+  twoFAEmail: acc.fa_email || '',    
+  appPassword: acc.fa_app_pass || '',
+        code: acc.code,
+        status: acc.status,
+        max_users: acc.max_users,
+        users: acc.users || []
+      }));
+      setAccounts(decrypted);
+    }
+  };
+
+  fetchAccounts();
+}, [id, storeId]);
+
+return (
+  <MainLayout isAdmin={isAdmin}>
+    <div className="space-y-6">
+      {/* ────────────────── Page Header ────────────────── */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => navigate(isAdmin ? "/admin/stores" : "/products")}
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+          <h1 className="text-2xl font-bold">{t(formTitle)}</h1>
         </div>
-        
-        <Tabs defaultValue="details" value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="grid w-full max-w-md grid-cols-2">
-            <TabsTrigger value="details">{t('Details')}</TabsTrigger>
-            {isEditing && !isAdmin && (
-              <TabsTrigger value="accounts">
-                {form.watch('isGiftCard') ? t('Codes') : t('Accounts')}
-              </TabsTrigger>
-            )}
-          </TabsList>
-          
-          <TabsContent value="details" className="space-y-4 mt-6">
-            <Form {...form}>
-              <form 
-                onSubmit={form.handleSubmit(handleFormSubmit)} 
-                className="space-y-6"
-              >
-                <Card>
-                  <CardHeader>
-                    <CardTitle>{t('Basic Information')}</CardTitle>
-                    <CardDescription>
-                      {t(isAdmin ? 'Configure the basic settings for your store' : 'Configure the basic settings for your product')}
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <FormField
-                      control={form.control}
-                      name="name"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>{t('Name')}</FormLabel>
-                          <FormControl>
-                            <Input placeholder={isAdmin ? t("Store name") : t("Product name")} {...field} />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
+
+        {isEditing && (
+<Button
+  variant="destructive"
+  onClick={() => handleDeleteItem(id)}
+>
+  <Trash className="h-4 w-4 mr-2" />
+  {t("Delete")}
+</Button>
+        )}
+      </div>
+
+      {/* ────────────────── Tabs ────────────────── */}
+      <Tabs defaultValue="details" value={activeTab} onValueChange={setActiveTab}>
+        <TabsList className="grid w-full max-w-md grid-cols-2">
+          <TabsTrigger value="details">{t("Details")}</TabsTrigger>
+          {isEditing && !isAdmin && (
+            <TabsTrigger value="accounts">
+              {form.watch("isGiftCard") ? t("Codes") : t("Accounts")}
+            </TabsTrigger>
+          )}
+        </TabsList>
+
+        {/* ─────────────── Details Tab ─────────────── */}
+        <TabsContent value="details" className="space-y-4 mt-6">
+          <Form {...form}>
+            <form onSubmit={form.handleSubmit(handleFormSubmit)} className="space-y-6">
+              {/* ============= Basic Info Card ============= */}
+              <Card>
+                <CardHeader>
+                  <CardTitle>{t("Basic Information")}</CardTitle>
+                  <CardDescription>
+                    {t(
+                      isAdmin
+                        ? "Configure the basic settings for your store"
+                        : "Configure the basic settings for your product"
+                    )}
+                  </CardDescription>
+                </CardHeader>
+
+                <CardContent className="space-y-4">
+                  {/* Account-type picker */}
+                  <FormField
+                    control={form.control}
+                    name="account_type"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('نوع الحساب')}</FormLabel>
+                        <FormControl>
+                          <ToggleGroup
+                            type="single"
+                            value={field.value}
+                            onValueChange={field.onChange}
+                            className="grid grid-cols-3 gap-2"
+                          >
+                            {["PlayStation", "Steam", "Chatgpt", "Spotify", "Canva", "GamePass"].map(
+                              (val) => (
+                                <ToggleGroupItem
+                                  key={val}
+                                  value={val}
+                                  className="w-full px-4 py-2 border border-white/10 bg-black text-white rounded-md data-[state=on]:bg-white data-[state=on]:text-black"
+                                >
+                                  {val.charAt(0).toUpperCase() + val.slice(1)}
+                                </ToggleGroupItem>
+                              )
+                            )}
+                          </ToggleGroup>
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
+
+                  {/* Product picker */}
+                  {showProductPicker && (
+                    <ProductPicker
+                      open={showProductPicker}
+                      onClose={() => setShowProductPicker(false)}
+                      onSelect={(product) => {
+                        setSelectedProduct({
+                          id: product.id,
+                          name: product.name,
+                          image: product.thumbnail,
+                        });
+                        form.setValue("sallaUrl", product.urls.customer);
+                        form.setValue("name", product.name);
+                        setShowProductPicker(false);
+                      }}
                     />
-                    
-                    <FormField
-                      control={form.control}
-                      name="sallaUrl"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>{t('Product URL in Salla - رابط المنتج في سلة')}</FormLabel>
-                          <FormControl>
-                            <Input 
-                              placeholder="https://salla.sa/store-name/product-name/p123456789" 
-                              {...field}
-                            />
-                          </FormControl>
-                          <FormDescription>
-                            {t('Enter the Salla product URL to automatically extract the product code')}
-                          </FormDescription>
-                          <FormMessage />
-                        </FormItem>
+                  )}
+
+                  <FormItem>
+                    <FormLabel>                        اختر منتج من سلة</FormLabel>
+                    <div className="flex items-center gap-3">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={() => setShowProductPicker(true)}
+                      >
+                        <ShoppingCart className="h-4 w-4 mr-2" />
+                        اختر منتج من سلة
+                      </Button>
+
+                      {selectedProduct ? (
+                        <div className="flex items-center gap-2">
+                          <img
+                            src={selectedProduct.image}
+                            alt="Product"
+                            className="w-12 h-12 rounded-lg border"
+                          />
+                          <div>
+                            <p className="text-sm font-medium">
+                              {selectedProduct.name}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              Product ID:{" "}
+                              {extractSallaProductId(form.getValues("sallaUrl"))}
+                            </p>
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="text-destructive">
+                          ⚠️ الرجاء اختيار منتج من سلة
+                        </span>
                       )}
-                    />
-          <FormField
+                    </div>
+                  </FormItem>
+<FormField
   control={form.control}
   name="enableFileDelivery"
   render={({ field }) => (
-    <FormItem>
-      <FormLabel>تسليم ملف؟</FormLabel>
+    <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
+      <div className="space-y-0.5">
+        <FormLabel className="text-base">
+          {t('Enable File Delivery')}
+        </FormLabel>
+        <FormDescription>
+          {t('Send a PDF / DOCX to the customer after purchase')}
+        </FormDescription>
+      </div>
       <FormControl>
-        <Switch
-          checked={field.value}
-          onCheckedChange={field.onChange}
-        />
+        <Switch checked={field.value} onCheckedChange={field.onChange} />
       </FormControl>
-      <FormDescription>إذا فعلت هذا، سيتم تسليم ملف بدل الحساب</FormDescription>
     </FormItem>
   )}
 />
+                  {/* File-delivery settings */}
+                  {form.watch("enableFileDelivery") && (
+                    <Card>
+                      <CardHeader>
+                        <CardTitle>File Delivery Settings</CardTitle>
+                        <CardDescription>
+                          Configure file delivery options for this product
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        {form.getValues().fileUrl && !file ? (
+                          <div className="flex items-center justify-between bg-muted px-4 py-2 rounded">
+                            <a
+                              href={`https://rrmrownqurlhnngqeoqm.supabase.co/storage/v1/object/public/productfiles/${form
+                                .getValues()
+                                .fileUrl.split("/")
+                                .pop()}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-blue-500 underline text-sm"
+                            >
+                              {form.getValues().fileUrl.split("/").pop()}
+                            </a>
+                            <Button
+                              variant="link"
+                              size="sm"
+                              className="text-red-500"
+                              onClick={() => {
+                                form.setValue("file", undefined);
+                                form.setValue("fileUrl", undefined);
+                              }}
+                            >
+                              Remove File
+                            </Button>
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            <Label>Upload Product File (PDF/DOCX ≤ 2 MB)</Label>
+                            <Input
+                              type="file"
+                              accept=".pdf,.docx"
+                              onChange={(e) => {
+                                const uploaded = e.target.files?.[0];
+                                if (uploaded && uploaded.size <= 2 * 1024 * 1024) {
+                                  setFile(uploaded);
+                                  form.setValue("file", uploaded);
+                                } else {
+                                  toast.error(
+                                    "File must be a PDF or DOCX and ≤ 2 MB"
+                                  );
+                                  e.target.value = "";
+                                }
+                              }}
+                              className="cursor-pointer border-dashed"
+                            />
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  )}
 
-{form.watch("enableFileDelivery") && (
-  <div className="mt-4">
-    <FormLabel>رفع الملف</FormLabel>
-    <Input
-      type="file"
-      accept=".pdf,.doc,.docx"
-      onChange={(e) => {
-        const uploaded = e.target.files?.[0];
-        if (uploaded && uploaded.size <= 2 * 1024 * 1024) {
-          setFile(uploaded);
-        } else {
-          toast({ title: "حجم الملف يجب ألا يزيد عن 2 ميغابايت" });
-          e.target.value = ''; // clear input
-        }
-      }}
-    />
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div className="space-y-4">
-                        <FormField
-                          control={form.control}
-                          name="infiniteUsers"
-                          render={({ field }) => (
-                            <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
-                              <div className="space-y-0.5">
-                                <FormLabel className="text-base">
-                                  {t('Infinite Users')}
-                                </FormLabel>
-                                <FormDescription>
-                                  {t('Allow unlimited users for this product')}
-                                </FormDescription>
-                              </div>
-                              <FormControl>
-                                <Switch
-                                  checked={field.value}
-                                  onCheckedChange={(checked) => {
-                                    handleInfiniteUsersToggle(checked);
-                                  }}
-                                  disabled={form.watch('isGiftCard')}
-                                />
-                              </FormControl>
-                            </FormItem>
-                          )}
-                        />
-                        
-                        <FormField
-                          control={form.control}
-                          name="maxUsers"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>{t('Max Users')}</FormLabel>
-                              <FormControl>
-                                <Input 
-                                  type="number" 
-                                  min="1" 
-                                  {...field} 
-                                  value={field.value || ''}
-                                  onChange={(e) => field.onChange(e.target.value ? parseInt(e.target.value) : null)}
-                                  disabled={form.watch('infiniteUsers') || form.watch('isGiftCard')}
-                                />
-                              </FormControl>
-                              <FormDescription>
-                                {form.watch('infiniteUsers') 
-                                  ? t('Unlimited users allowed') 
-                                  : t('Maximum number of users allowed')}
-                              </FormDescription>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-                      </div>
-                      
-                      <div className="space-y-4">
-                        <FormField
-                          control={form.control}
-                          name="infiniteExpiry"
-                          render={({ field }) => (
-                            <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
-                              <div className="space-y-0.5">
-                                <FormLabel className="text-base">
-                                  {t('Never Expires')}
-                                </FormLabel>
-                                <FormDescription>
-                                  {t('Product never expires')}
-                                </FormDescription>
-                              </div>
-                              <FormControl>
-                                <Switch
-                                  checked={field.value}
-                                  onCheckedChange={(checked) => {
-                                    handleInfiniteExpiryToggle(checked);
-                                  }}
-                                />
-                              </FormControl>
-                            </FormItem>
-                          )}
-                        />
-                        
-                        <FormField
-                          control={form.control}
-                          name="expireDays"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>{t('Expire Days')}</FormLabel>
-                              <FormControl>
-                                <Input 
-                                  type="number" 
-                                  min="1" 
-                                  {...field} 
-                                  value={field.value || ''}
-                                  onChange={(e) => field.onChange(e.target.value ? parseInt(e.target.value) : null)}
-                                  disabled={form.watch('infiniteExpiry')}
-                                />
-                              </FormControl>
-                              <FormDescription>
-                                {form.watch('infiniteExpiry') 
-                                  ? t('Product never expires') 
-                                  : t('Number of days until expiration')}
-                              </FormDescription>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-                
-                <Card>
-                  <CardHeader>
-                    <CardTitle>{t('Advanced Settings')}</CardTitle>
-                    <CardDescription>
-                      {t(isAdmin ? 'Configure additional options for your store' : 'Configure additional options for your product')}
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <FormField
-                      control={form.control}
-                      name="isGiftCard"
-                      render={({ field }) => (
-                        <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
-                          <div className="space-y-0.5">
-                            <FormLabel className="text-base">
-                              {t('Gift Card Product')}
-                            </FormLabel>
-                            <FormDescription>
-                              {t('Enable if this product is a gift card (code only, no email/password)')}
-                            </FormDescription>
-                          </div>
-                          <FormControl>
-                            <Switch
-                              checked={field.value}
-                              onCheckedChange={(checked) => {
-                                handleGiftCardToggle(checked);
-                              }}
-                            />
-                          </FormControl>
-                        </FormItem>
-                      )}
-                    />
-                    
-                    <FormField
-                      control={form.control}
-                      name="twoFAEnabled"
-                      render={({ field }) => (
-                        <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
-                          <div className="space-y-0.5">
-                            <FormLabel className="text-base">
-                              {t('Enable Two-Factor Authentication')}
-                            </FormLabel>
-                            <FormDescription>
-                              {t(isAdmin ? 'Require 2FA for this store' : 'Require 2FA for this product')}
-                            </FormDescription>
-                          </div>
-                          <FormControl>
-                            <Switch
-                              checked={field.value}
-                              onCheckedChange={(checked) => {
-                                handle2FAToggle(checked);
-                              }}
-                              disabled={form.watch('isGiftCard')}
-                            />
-                          </FormControl>
-                        </FormItem>
-                      )}
-                    />
-                    
-                    <FormField
-                      control={form.control}
-                      name="limitTwoFAPerUser"
-                      render={({ field }) => (
-                        <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
-                          <div className="space-y-0.5">
-                            <FormLabel className="text-base">
-                              {t('Limit 2FA Per User')}
-                            </FormLabel>
-                            <FormDescription>
-                              {t('Limit how many 2FA codes a user can get')}
-                            </FormDescription>
-                          </div>
-                          <FormControl>
-                            <Switch
-                              checked={field.value}
-                              onCheckedChange={field.onChange}
-                              disabled={!form.watch('twoFAEnabled')}
-                            />
-                          </FormControl>
-                        </FormItem>
-                      )}
-                    />
-                    
-                    {form.watch('limitTwoFAPerUser') && form.watch('twoFAEnabled') && (
+                  {/* Users & expiry */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Users */}
+                    <div className="space-y-4">
                       <FormField
                         control={form.control}
-                        name="twoFALimit"
+                        name="infiniteUsers"
+                        render={({ field }) => (
+                          <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
+                            <div className="space-y-0.5">
+                              <FormLabel className="text-base">
+                                {t("Infinite Users")}
+                              </FormLabel>
+                              <FormDescription>
+                                {t("Allow unlimited users for this product")}
+                              </FormDescription>
+                            </div>
+                            <FormControl>
+                              <Switch
+                                checked={field.value}
+                                onCheckedChange={(checked) =>
+                                  handleInfiniteUsersToggle(checked)
+                                }
+                                disabled={form.watch("isGiftCard")}
+                              />
+                            </FormControl>
+                          </FormItem>
+                        )}
+                      />
+
+            <FormField
+  control={form.control}
+  name="maxUsers"
+  render={({ field }) => (
+    <FormItem>
+      <FormLabel>{t("Max Users")}</FormLabel>
+      <FormControl>
+        <Input
+          type="number"
+          min="1"
+          {...field}
+          value={
+            form.watch("infiniteUsers")
+              ? ""
+              : field.value ?? 1 // default 1
+          }
+          onChange={(e) =>
+            field.onChange(
+              e.target.value
+                ? parseInt(e.target.value)
+                : null
+            )
+          }
+          disabled={
+            form.watch("infiniteUsers") || form.watch("isGiftCard")
+          }
+          placeholder={
+            form.watch("infiniteUsers") ? "∞" : "مثلاً: 3"
+          }
+        />
+      </FormControl>
+      <FormDescription>
+        {form.watch("infiniteUsers")
+          ? t("Unlimited users allowed")
+          : t("Maximum number of users allowed")}
+      </FormDescription>
+      <FormMessage />
+    </FormItem>
+  )}
+/>
+                    </div>
+
+                    {/* Expiry */}
+                    <div className="space-y-4">
+                      <FormField
+                        control={form.control}
+                        name="infiniteExpiry"
+                        render={({ field }) => (
+                          <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
+                            <div className="space-y-0.5">
+                              <FormLabel className="text-base">
+                                {t("Never Expires")}
+                              </FormLabel>
+                              <FormDescription>
+                                {t("Product never expires")}
+                              </FormDescription>
+                            </div>
+                            <FormControl>
+                              <Switch
+                                checked={field.value}
+                                onCheckedChange={(checked) =>
+                                  handleInfiniteExpiryToggle(checked)
+                                }
+                              />
+                            </FormControl>
+                          </FormItem>
+                        )}
+                      />
+
+                      <FormField
+                        control={form.control}
+                        name="expireDays"
                         render={({ field }) => (
                           <FormItem>
-                            <FormLabel>{t('2FA Code Limit')}</FormLabel>
+                            <FormLabel>{t("Expire Days")}</FormLabel>
                             <FormControl>
-                              <Input 
-                                type="number" 
-                                min="1" 
-                                {...field} 
-                                onChange={(e) => field.onChange(e.target.value ? parseInt(e.target.value) : '')}
+                              <Input
+                                type="number"
+                                min="1"
+                                {...field}
+                                value={field.value ?? ""}
+                                onChange={(e) =>
+                                  field.onChange(
+                                    e.target.value
+                                      ? parseInt(e.target.value)
+                                      : null
+                                  )
+                                }
+                                disabled={form.watch("infiniteExpiry")}
                               />
                             </FormControl>
                             <FormDescription>
-                              {t('Maximum number of 2FA codes a user can get')}
+                              {form.watch("infiniteExpiry")
+                                ? t("Product never expires")
+                                : t("Number of days until expiration")}
                             </FormDescription>
                             <FormMessage />
                           </FormItem>
                         )}
                       />
-                    )}
-                  </CardContent>
-                </Card>
-                
-                <div className="flex justify-end gap-4">
-                  <Button 
-                    variant="outline" 
-                    type="button" 
-                    onClick={() => navigate(isAdmin ? '/admin/stores' : '/products')}
-                  >
-                    {t('Cancel')}
-                  </Button>
-                  <Button 
-                    variant="secondary"
-                    type="button" 
-                    onClick={() => {
-                      // Save current form state without leaving the page
-                      const values = form.getValues();
-                      onSubmit(values as z.infer<typeof formSchema>, true);
-                      // Prevent navigation to list page
-                      return false;
-                    }}
-                  >
-                    {t('Save')}
-                  </Button>
-                  <Button type="submit">
-                    {isEditing ? t('Update') : t('Create')}
-                  </Button>
-                </div>
-              </form>
-            </Form>
-          </TabsContent>
-          
-          {isEditing && !isAdmin && (
-            <TabsContent value="accounts" className="space-y-4 mt-6">
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* ========== Advanced Settings Card ========== */}
               <Card>
                 <CardHeader>
-                  <CardTitle className="flex justify-between items-center">
-                    <span>{form.watch('isGiftCard') ? t('Manage Gift Card Codes') : t('Manage Accounts')}</span>
-                    <Button 
-                      size="sm" 
-                      onClick={() => setIsAddingAccount(true)}
-                      disabled={isAddingAccount}
-                    >
-                      <Plus className="h-4 w-4 mr-2" />
-                      {form.watch('isGiftCard') ? t('Add Code') : t('Add Account')}
-                    </Button>
-                  </CardTitle>
+                  <CardTitle>{t("Advanced Settings")}</CardTitle>
                   <CardDescription>
-                    {form.watch('isGiftCard') 
-                      ? t('Add and manage gift card codes for this product') 
-                      : t('Add and manage accounts for this product')}
+                    {t(
+                      isAdmin
+                        ? "Configure additional options for your store"
+                        : "Configure additional options for your product"
+                    )}
                   </CardDescription>
                 </CardHeader>
-                <CardContent>
-                  <div className="rounded-md border overflow-hidden">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          {form.watch('isGiftCard') ? (
-                            <TableHead>{t('Gift Card Code')}</TableHead>
+
+                <CardContent className="space-y-4">
+                  {/* Gift-card toggle */}
+                  <FormField
+                    control={form.control}
+                    name="isGiftCard"
+                    render={({ field }) => (
+                      <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
+                        <div className="space-y-0.5">
+                          <FormLabel className="text-base">
+                            {t("Gift Card Product")}
+                          </FormLabel>
+                          <FormDescription>
+                            {t(
+                              "Enable if this product is a gift card (code only, no email/password)"
+                            )}
+                          </FormDescription>
+                        </div>
+                        <FormControl>
+                          <Switch
+                            checked={field.value}
+                            onCheckedChange={(checked) =>
+                              handleGiftCardToggle(checked)
+                            }
+                          />
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
+
+                  {/* 2FA toggle */}
+                  <FormField
+                    control={form.control}
+                    name="twoFAEnabled"
+                    render={({ field }) => (
+                      <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
+                        <div className="space-y-0.5">
+                          <FormLabel className="text-base">
+                            {t("Enable Two-Factor Authentication")}
+                          </FormLabel>
+                          <FormDescription>
+                            {t(
+                              isAdmin
+                                ? "Require 2FA for this store"
+                                : "Require 2FA for this product"
+                            )}
+                          </FormDescription>
+                        </div>
+                        <FormControl>
+                          <Switch
+                            checked={field.value}
+                            onCheckedChange={(checked) =>
+                              handle2FAToggle(checked)
+                            }
+                            disabled={form.watch("isGiftCard")}
+                          />
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
+
+                  {/* If 2FA enabled → settings */}
+                  {form.watch("twoFAEnabled") && (
+                    <>
+                      {/* 2FA type */}
+                      <FormField
+                        control={form.control}
+                        name="twoFAType"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>2FA Verification Method</FormLabel>
+                            <FormControl>
+                              <div className="flex gap-2">
+                                {(["totp", "email"] as const).map((val) => (
+                                  <Button
+                                    key={val}
+                                    type="button"
+                                    variant={
+                                      field.value === val ? "default" : "outline"
+                                    }
+                                    onClick={() => field.onChange(val)}
+                                    className="w-1/2"
+                                  >
+                                    {val === "totp"
+                                      ? "TOTP (App)"
+                                      : "Email Verification"}
+                                  </Button>
+                                ))}
+                              </div>
+                            </FormControl>
+                            <FormDescription>
+                              Select how users will receive their 2FA codes
+                            </FormDescription>
+                          </FormItem>
+                        )}
+                      />
+
+                      {/* Limit per-user */}
+                      <FormField
+                        control={form.control}
+                        name="limitTwoFAPerUser"
+                        render={({ field }) => (
+                          <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
+                            <div className="space-y-0.5">
+                              <FormLabel className="text-base">
+                                {t("Limit 2FA Per User")}
+                              </FormLabel>
+                              <FormDescription>
+                                {t("Limit how many 2FA codes a user can get")}
+                              </FormDescription>
+                            </div>
+                            <FormControl>
+                              <Switch
+                                checked={field.value}
+                                onCheckedChange={field.onChange}
+                                disabled={!form.watch("twoFAEnabled")}
+                              />
+                            </FormControl>
+                          </FormItem>
+                        )}
+                      />
+
+                      {/* Code limit */}
+                      {form.watch("limitTwoFAPerUser") && (
+                        <FormField
+                          control={form.control}
+                          name="twoFALimit"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>{t("2FA Code Limit")}</FormLabel>
+                              <FormControl>
+                                <Input
+                                  type="number"
+                                  min="1"
+                                  {...field}
+                                  onChange={(e) =>
+                                    field.onChange(
+                                      e.target.value
+                                        ? parseInt(e.target.value)
+                                        : ""
+                                    )
+                                  }
+                                />
+                              </FormControl>
+                              <FormDescription>
+                                {t("Maximum number of 2FA codes a user can get")}
+                              </FormDescription>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      )}
+
+                      {/* Email-2FA extra fields */}
+                      {form.watch("twoFAType") === "email" && (
+                        <>
+                   <FormField
+  control={form.control}
+  name="emailProvider"
+  render={({ field }) => (
+    <FormItem>
+      <FormLabel>Email Service Provider</FormLabel>
+      <FormControl>
+        <ToggleGroup
+          type="single"
+          value={field.value}
+          onValueChange={field.onChange}
+          className="grid grid-cols-1 gap-2"
+        >
+          <ToggleGroupItem
+            value="gmail"
+            className="w-full px-4 py-2 border border-white/10 bg-black text-white rounded-md data-[state=on]:bg-white data-[state=on]:text-black"
+          >
+            Gmail
+          </ToggleGroupItem>
+        </ToggleGroup>
+      </FormControl>
+      <FormDescription>
+        Only Gmail is supported for 2FA email codes.
+      </FormDescription>
+    </FormItem>
+  )}
+/>
+
+                          <FormField
+                            control={form.control}
+                            name="email"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel>2FA Email Sender</FormLabel>
+                                <FormControl>
+                                  <Input
+                                    placeholder="e.g., support@steam.com"
+                                    {...field}
+                                  />
+                                </FormControl>
+                                <FormDescription>
+                                  The email address used to send the 2FA code
+                                </FormDescription>
+                              </FormItem>
+                            )}
+                          />
+                        </>
+                      )}
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* ===== Save / Cancel ===== */}
+              <div className="flex justify-end gap-4">
+                <Button
+                  variant="outline"
+                  type="button"
+                  onClick={() =>
+                    navigate(isAdmin ? "/admin/stores" : "/products")
+                  }
+                >
+                  {t("Cancel")}
+                </Button>
+                <Button
+                  variant="secondary"
+                  type="button"
+                  onClick={() => onSubmit(form.getValues(), true)}
+                >
+                  {t("Save")}
+                </Button>
+              </div>
+            </form>
+          </Form>
+        </TabsContent>
+
+        {/* ─────────────── Accounts Tab ─────────────── */}
+        {isEditing && !isAdmin && (
+          <TabsContent value="accounts" className="space-y-4 mt-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex justify-between items-center">
+                  <span>
+                    {form.watch("isGiftCard")
+                      ? t("Manage Gift Card Codes")
+                      : t("Manage Accounts")}
+                  </span>
+                  <Button
+                    size="sm"
+                    onClick={() => setIsAddingAccount(true)}
+                    disabled={isAddingAccount}
+                  >
+                    <Plus className="h-4 w-4 mr-2" />
+                    {form.watch("isGiftCard") ? t("Add Code") : t("Add Account")}
+                  </Button>
+                </CardTitle>
+                <CardDescription>
+                  {form.watch("isGiftCard")
+                    ? t("Add and manage gift card codes for this product")
+                    : t("Add and manage accounts for this product")}
+                </CardDescription>
+              </CardHeader>
+
+              <CardContent>
+                <div className="rounded-md border overflow-hidden">
+                  <Table>
+                    {/* Table head */}
+                    <TableHeader>
+                      <TableRow>
+                        {form.watch("isGiftCard") ? (
+                          <TableHead>{t("Gift Card Code")}</TableHead>
+                        ) : (
+                          <>
+                            <TableHead>{t("Email")}</TableHead>
+                            <TableHead>{t("Password")}</TableHead>
+                            <TableHead>{t("2FA Info")}</TableHead>
+                          </>
+                        )}
+                        <TableHead>{t("Status")}</TableHead>
+                        <TableHead className="text-right">
+                          {t("Actions")}
+                        </TableHead>
+                      </TableRow>
+                    </TableHeader>
+
+                    {/* Table body */}
+                    <TableBody>
+                      {/* Existing accounts */}
+                      {accounts.map((account) => (
+                        <TableRow key={account.id}>
+                          {form.watch("isGiftCard") ? (
+                            <TableCell>{account.code}</TableCell>
                           ) : (
                             <>
-                              <TableHead>{t('Email')}</TableHead>
-                              <TableHead>{t('Password')}</TableHead>
-                              <TableHead>{t('2FA Secret')}</TableHead>
-                            </>
-                          )}
-                          <TableHead>{t('Status')}</TableHead>
-                          <TableHead className="text-right">{t('Actions')}</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {isAddingAccount && (
-                          <TableRow>
-                            {form.watch('isGiftCard') ? (
-                              <TableCell>
-                                <Input
-                                  value={newAccount.code}
-                                  onChange={(e) => setNewAccount({...newAccount, code: e.target.value})}
-                                  placeholder={t('Enter gift card code')}
-                                />
-                              </TableCell>
-                            ) : (
-                              <>
-                                <TableCell>
-                                  <Input
-                                    value={newAccount.email}
-                                    onChange={(e) => setNewAccount({...newAccount, email: e.target.value})}
-                                    placeholder={t('Email')}
-                                  />
-                                </TableCell>
-                                <TableCell>
-                                  <div className="relative">
+                              {/* Email */}
+                              <TableCell>{account.email}</TableCell>
+
+                              {/* Password */}
+<TableCell>
+  <div className={`flex items-center ${rtl ? 'flex-row-reverse' : ''} gap-2`}>
+    <span className="text-sm">
+      {account.password || "-"}
+    </span>
+  </div>
+</TableCell>
+
+
+                              {/* 2FA info */}
+                              <TableCell className="space-y-1">
+                                {editingAccount === account.id ? (
+                                  form.watch("twoFAType") === "email" ? (
+                                    <>
+                                      <Input
+                                        value={editedAccount.twoFAEmail}
+                                        onChange={(e) =>
+                                          setEditedAccount({
+                                            ...editedAccount,
+                                            twoFAEmail: e.target.value,
+                                          })
+                                        }
+                                        placeholder="2FA Email"
+                                      />
+                                      <div className="relative">
+                                        <Input
+                                          type={
+                                            showEditAppPassword
+                                              ? "text"
+                                              : "password"
+                                          }
+                                          value={editedAccount.appPassword}
+                                          onChange={(e) =>
+                                            setEditedAccount({
+                                              ...editedAccount,
+                                              appPassword: e.target.value,
+                                            })
+                                          }
+                                          placeholder="App Password"
+                                        />
+                                      </div>
+                                    </>
+                                  ) : (
                                     <Input
-                                      value={newAccount.password}
-                                      onChange={(e) => setNewAccount({...newAccount, password: e.target.value})}
-                                      placeholder={t('Password')}
-                                      type={showPassword ? "text" : "password"}
-                                      className="pr-10"
+                                      value={editedAccount.twoFASecret}
+                                      onChange={(e) =>
+                                        setEditedAccount({
+                                          ...editedAccount,
+                                          twoFASecret: e.target.value,
+                                        })
+                                      }
+                                      placeholder="2FA Secret (optional)"
                                     />
-                                    <button
+                                  )
+                                ) : form.watch("twoFAType") === "email" ? (
+                                  <div className="flex items-center justify-between gap-2 whitespace-nowrap">
+                                    <span className="text-sm">
+                                      {visibleAppPasswords[account.id]
+                                        ? account.appPassword || "-"
+                                        : "••••••••"}
+                                    </span>
+                                    <Button
                                       type="button"
-                                      onClick={() => setShowPassword(!showPassword)}
-                                      className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600 focus:outline-none"
+                                      variant="ghost"
+                                      size="icon"
+                                      onClick={() =>
+                                        setVisibleAppPasswords((p) => ({
+                                          ...p,
+                                          [account.id]: !p[account.id],
+                                        }))
+                                      }
                                     >
-                                      {showPassword ? (
+                                      {visibleAppPasswords[account.id] ? (
                                         <EyeOff className="h-4 w-4" />
                                       ) : (
                                         <Eye className="h-4 w-4" />
                                       )}
-                                    </button>
+                                    </Button>
                                   </div>
-                                </TableCell>
-                                <TableCell>
-                                  <Input
-                                    value={newAccount.twoFASecret}
-                                    onChange={(e) => setNewAccount({...newAccount, twoFASecret: e.target.value})}
-                                    placeholder={`${t('2FA Secret')} (${t('optional')})`}
-                                  />
-                                </TableCell>
-                              </>
-                            )}
-                            <TableCell>
-                              <select
-                                value={newAccount.status}
-                                onChange={(e) => setNewAccount({...newAccount, status: e.target.value})}
-                                className="w-full p-2 border rounded bg-background text-foreground border-border"
-                              >
-                                <option value="active">{t('Active')}</option>
-                                <option value="paused">{t('Paused')}</option>
-                                <option value="full">{t('Full')}</option>
-                              </select>
-                            </TableCell>
-                            <TableCell className="text-right">
-                              <div className="flex justify-end gap-2">
-                                <Button size="icon" variant="ghost" onClick={() => handleAddAccount()}>
-                                  <Check className="h-4 w-4" />
-                                </Button>
-                                <Button size="icon" variant="ghost" onClick={() => setIsAddingAccount(false)}>
-                                  <Trash className="h-4 w-4 text-destructive" />
-                                </Button>
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        )}
-                        
-                        {accounts.length > 0 ? (
-                          accounts.map((account) => (
-                            <TableRow key={account.id}>
-                              {isGiftCardAccount(account) ? (
-                                <TableCell>
-                                  {editingAccount === account.id ? (
-                                    <Input
-                                      value={editedAccount.code}
-                                      onChange={(e) => setEditedAccount({...editedAccount, code: e.target.value})}
-                                      placeholder={t('Enter gift card code')}
-                                    />
-                                  ) : (
-                                    account.code
-                                  )}
-                                </TableCell>
-                              ) : (
-                                <>
-                                  <TableCell>
-                                    {editingAccount === account.id ? (
-                                      <Input
-                                        value={editedAccount.email}
-                                        onChange={(e) => setEditedAccount({...editedAccount, email: e.target.value})}
-                                        placeholder="Email"
-                                      />
-                                    ) : (
-                                      account.email
-                                    )}
-                                  </TableCell>
-                                  <TableCell>
-                                    {editingAccount === account.id ? (
-                                      <div className="relative">
-                                        <Input
-                                          value={editedAccount.password}
-                                          onChange={(e) => setEditedAccount({...editedAccount, password: e.target.value})}
-                                          placeholder="Password"
-                                          type={showEditPassword ? "text" : "password"}
-                                          className="pr-10"
-                                        />
-                                        <button
-                                          type="button"
-                                          onClick={() => setShowEditPassword(!showEditPassword)}
-                                          className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600 focus:outline-none"
-                                        >
-                                          {showEditPassword ? (
-                                            <EyeOff className="h-4 w-4" />
-                                          ) : (
-                                            <Eye className="h-4 w-4" />
-                                          )}
-                                        </button>
-                                      </div>
-                                    ) : (
-                                      <span className="password-mask">••••••••</span>
-                                    )}
-                                  </TableCell>
-                                  <TableCell>
-                                    {editingAccount === account.id ? (
-                                      <Input
-                                        value={editedAccount.twoFASecret}
-                                        onChange={(e) => setEditedAccount({...editedAccount, twoFASecret: e.target.value})}
-                                        placeholder="2FA Secret (optional)"
-                                      />
-                                    ) : (
-                                      account.two_fa_secret ? (
-                                        <span className="password-mask">••••••</span>
-                                      ) : (
-                                        <span className="text-muted-foreground">—</span>
-                                      )
-                                    )}
-                                  </TableCell>
-                                </>
-                              )}
-                              <TableCell>
-                                {editingAccount === account.id ? (
-                                  <select
-                                    value={editedAccount.status}
-                                    onChange={(e) => setEditedAccount({...editedAccount, status: e.target.value})}
-                                    className="w-full p-2 border rounded bg-background text-foreground border-border"
-                                  >
-                                    <option value="active">{t('Active')}</option>
-                                    <option value="paused">{t('Paused')}</option>
-                                    <option value="full">{t('Full')}</option>
-                                  </select>
                                 ) : (
-                                  <span className={`px-2 py-1 rounded-full text-xs ${
-                                    account.status === 'active' ? 'bg-emerald-900 text-emerald-100 border border-emerald-700' :
-                                    account.status === 'paused' ? 'bg-amber-900 text-amber-100 border border-amber-700' :
-                                    'bg-rose-900 text-rose-100 border border-rose-700'
-                                  }`}>
-                                    {account.status}
+                                  <span className="text-sm">
+                                    {account.two_fa_secret || "-"}
                                   </span>
                                 )}
                               </TableCell>
-                              <TableCell className="text-right">
-                                <div className="flex justify-end gap-2">
-                                  {editingAccount === account.id ? (
-                                    <>
-                                      <Button size="icon" variant="ghost" onClick={saveAccountEdit}>
-                                        <Check className="h-4 w-4" />
-                                      </Button>
-                                      <Button size="icon" variant="ghost" onClick={cancelAccountEdit}>
-                                        <Trash className="h-4 w-4 text-destructive" />
-                                      </Button>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Button size="icon" variant="ghost" onClick={() => startEditAccount(account)}>
-                                        <Edit className="h-4 w-4" />
-                                      </Button>
-                                      <Button
-                                        size="icon"
-                                        variant="ghost"
-                                        onClick={() => handleDeleteAccount(account.id)}
-                                      >
-                                        <Trash className="h-4 w-4 text-destructive" />
-                                      </Button>
-                                      {/* Add View Users button for regular accounts (not gift cards) */}
-                                      {!isGiftCardAccount(account) && (
-                                        <Button
-                                          size="icon"
-                                          variant="ghost"
-                                          onClick={() => openUserManagement(account)}
-                                          title={t('View Users')}
-                                        >
-                                          <UsersIcon className="h-4 w-4 text-blue-400" />
-                                        </Button>
-                                      )}
-                                    </>
+                            </>
+                          )}
+
+                          {/* Status */}
+                          <TableCell>
+                            <span
+                              className={`px-2 py-1 rounded-full text-xs ${
+                                account.status === "active"
+                                  ? "bg-emerald-900 text-emerald-100 border border-emerald-700"
+                                  : account.status === "paused"
+                                  ? "bg-amber-900 text-amber-100 border border-amber-700"
+                                  : "bg-rose-900 text-rose-100 border border-rose-700"
+                              }`}
+                            >
+                              {account.status}
+                            </span>
+                          </TableCell>
+
+                          {/* Actions */}
+                          <TableCell className="text-right">
+                            <div className="flex justify-end gap-2">
+                              {editingAccount === account.id ? (
+                                <>
+                                  <Button
+                                    size="icon"
+                                    variant="ghost"
+                                    onClick={saveAccountEdit}
+                                  >
+                                    <Check className="h-4 w-4 text-emerald-400" />
+                                  </Button>
+                                  <Button
+                                    size="icon"
+                                    variant="ghost"
+                                    onClick={cancelAccountEdit}
+                                  >
+                                    <X className="h-4 w-4 text-rose-400" />
+                                  </Button>
+                                </>
+                              ) : (
+                                <>
+                                  <Button
+                                    size="icon"
+                                    variant="ghost"
+                                    onClick={() => startEditAccount(account)}
+                                  >
+                                    <Edit className="h-4 w-4" />
+                                  </Button>
+                                  <Button
+                                    size="icon"
+                                    variant="ghost"
+                                    onClick={() =>
+                                      handleDeleteAccount(account.id)
+                                    }
+                                  >
+                                    <Trash className="h-4 w-4 text-destructive" />
+                                  </Button>
+                                  {!form.watch("isGiftCard") && (
+                                    <Button
+                                      size="icon"
+                                      variant="ghost"
+                                      onClick={() =>
+                                        openUserManagement(account)
+                                      }
+                                    >
+                                      <UsersIcon className="h-4 w-4 text-blue-400" />
+                                    </Button>
                                   )}
-                                </div>
+                                </>
+                              )}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+
+                      {/* Row for new account / code */}
+                      {isAddingAccount && (
+                        <TableRow>
+                          {form.watch("isGiftCard") ? (
+                            <>
+                              <TableCell>
+                                <Input
+                                  value={newAccount.code}
+                                  onChange={(e) =>
+                                    setNewAccount({
+                                      ...newAccount,
+                                      code: e.target.value,
+                                    })
+                                  }
+                                  placeholder="Gift Card Code"
+                                />
                               </TableCell>
-                            </TableRow>
-                          ))
-                        ) : (
-                          <TableRow>
-                            <TableCell colSpan={form.watch('isGiftCard') ? 3 : 5} className="text-center py-6">
-                              <p>{form.watch('isGiftCard') ? t('No gift card codes found') : t('No accounts found')}</p>
+                              <TableCell />
+                              <TableCell />
+                            </>
+                          ) : (
+                            <>
+                              {/* Email */}
+                              <TableCell>
+                                <Input
+                                  value={newAccount.email}
+                                  onChange={(e) =>
+                                    setNewAccount({
+                                      ...newAccount,
+                                      email: e.target.value,
+                                    })
+                                  }
+                                  placeholder="Email"
+                                />
+                              </TableCell>
+
+                              {/* Password */}
+                              <TableCell>
+                                <Input
+                                  type="password"
+                                  value={newAccount.password}
+                                  onChange={(e) =>
+                                    setNewAccount({
+                                      ...newAccount,
+                                      password: e.target.value,
+                                    })
+                                  }
+                                  placeholder="Password"
+                                />
+                              </TableCell>
+
+                              {/* 2FA inputs */}
+                              <TableCell>
+                                {form.watch("twoFAType") === "email" ? (
+                                  <>
+                                    <Input
+                                      className="mb-1"
+                                      value={newAccount.twoFAEmail}
+                                      onChange={(e) =>
+                                        setNewAccount({
+                                          ...newAccount,
+                                          twoFAEmail: e.target.value,
+                                        })
+                                      }
+                                      placeholder="2FA Email"
+                                    />
+                                    <Input
+                                      type="password"
+                                      value={newAccount.appPassword}
+                                      onChange={(e) =>
+                                        setNewAccount({
+                                          ...newAccount,
+                                          appPassword: e.target.value,
+                                        })
+                                      }
+                                      placeholder="App Password"
+                                    />
+                                  </>
+                                ) : (
+                                  <Input
+                                    value={newAccount.twoFASecret}
+                                    onChange={(e) =>
+                                      setNewAccount({
+                                        ...newAccount,
+                                        twoFASecret: e.target.value,
+                                      })
+                                    }
+                                    placeholder="2FA Secret (optional)"
+                                  />
+                                )}
+                              </TableCell>
+                            </>
+                          )}
+
+                          {/* Status ثابت */}
+                          <TableCell>
+                            <span className="px-2 py-1 rounded-full text-xs bg-emerald-900 text-emerald-100 border border-emerald-700">
+                              active
+                            </span>
+                          </TableCell>
+
+                          {/* Save / Cancel */}
+                          <TableCell className="text-right">
+                            <div className="flex justify-end gap-2">
                               <Button
-                                variant="outline"
-                                className="mt-2"
-                                onClick={() => setIsAddingAccount(true)}
+                                size="icon"
+                                variant="ghost"
+                                onClick={handleAddAccount}
                               >
-                                <Plus className="h-4 w-4 mr-2" />
-                                {form.watch('isGiftCard') ? t('Add Code') : t('Add Account')}
+                                <Check className="h-4 w-4 text-emerald-400" />
                               </Button>
-                            </TableCell>
-                          </TableRow>
-                        )}
-                      </TableBody>
-                    </Table>
-                  </div>
-                </CardContent>
-              </Card>
-            </TabsContent>
-          )}
-        </Tabs>
-      </div>
-      
-      {/* Add the 2FA validation modal for new accounts */}
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                onClick={() => setIsAddingAccount(false)}
+                              >
+                                <X className="h-4 w-4 text-rose-400" />
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      )}
+
+                      {/* Empty state */}
+                      {accounts.length === 0 && !isAddingAccount && (
+                        <TableRow>
+                          <TableCell
+                            colSpan={form.watch("isGiftCard") ? 3 : 5}
+                            className="text-center py-6"
+                          >
+                            <p>
+                              {form.watch("isGiftCard")
+                                ? t("No gift card codes found")
+                                : t("No accounts found")}
+                            </p>
+                            <Button
+                              variant="outline"
+                              className="mt-2"
+                              onClick={() => setIsAddingAccount(true)}
+                            >
+                              <Plus className="h-4 w-4 mr-2" />
+                              {form.watch("isGiftCard")
+                                ? t("Add Code")
+                                : t("Add Account")}
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
+      </Tabs>
+
+      {/* ─────────────── Dialogs ─────────────── */}
       <TwoFactorValidation
         isOpen={validating2FA}
         onClose={() => {
@@ -1483,38 +2207,41 @@ export default function ProductForm({ isAdmin = false }: ProductFormProps) {
           setAccountToValidate(null);
         }}
         onValidate={async (isValid) => {
-          // Handle account 2FA validation
-          if (isValid && accountToValidate) {
-            await saveAccount(accountToValidate);
-          }
+          if (isValid && accountToValidate) await saveAccount(accountToValidate);
           setValidating2FA(false);
           setAccountToValidate(null);
         }}
-        secret={accountToValidate?.twoFASecret || ''}
+  secret={accountToValidate?.twoFASecret || ""}
       />
-      
-      {/* Add the user management dialog */}
+
       {selectedAccount && (
         <UserManagementDialog
           isOpen={showUserManagement}
           onClose={() => setShowUserManagement(false)}
-          accountName={selectedAccount.email || selectedAccount.code || ''}
+          accountName={selectedAccount.email || selectedAccount.code || ""}
           accountId={selectedAccount.id}
           users={selectedAccount.users || []}
           onDeleteUser={handleDeleteUser}
           onResetUserTwoFALimit={handleResetUserTwoFALimit}
           onUpdateUsers={handleUpdateUsers}
+          accounts={accounts}
+          setAccounts={setAccounts}
         />
       )}
-      
+
+      {/* Demo-mode banner */}
       {isDemoAccount() && (
         <div className="rounded-md bg-yellow-500/10 p-3 text-yellow-600 border border-yellow-200 dark:border-yellow-900 dark:text-yellow-400 mb-6">
           <div className="flex items-center">
             <AlertCircle className="h-4 w-4 mr-2" />
-            <p className="text-sm">{t("Demo Mode: The data shown is sample data. In a real environment, this would display actual product data from your store.")}</p>
+            <p className="text-sm">
+              {t(
+                "Demo Mode: The data shown is sample data. In a real environment, this would display actual product data from your store."
+              )}
+            </p>
           </div>
         </div>
       )}
-    </MainLayout>
-  );
-}
+    </div>
+  </MainLayout>
+);}
