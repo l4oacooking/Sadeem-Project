@@ -3,7 +3,7 @@ import sadeemLogo from "../assets/logo.png"; // عدل المسار إذا تغ�
 import { FaRegStar, FaEnvelope, FaWhatsapp, FaPhone } from "react-icons/fa";
 
 const SUPPORT_WHATSAPP = "966550379037"; // رقم الواتساب بدون "+"
-const SUPPORT_EMAIL = "support@sadeem.com";
+const SUPPORT_EMAIL = "sadeem.salla@gmail.com";
 const SUPPORT_PHONE = "0550379037"; // رقم الهاتف بدون "+" أو أي رموز أخرى
 
 const Support: React.FC = () => (
