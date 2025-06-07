@@ -126,7 +126,7 @@ const handleSubmit = async (e) => {
         <button
           type="button"
           className="text-blue-400 text-sm hover:underline transition"
-          onClick={() => window.location.href = '/support'}
+          onClick={() => window.location.href = '/supportlogin'}
         >
           الدعم الفني
         </button>

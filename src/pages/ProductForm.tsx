@@ -91,7 +91,8 @@ const formSchema = z.object({
     message: "Must contain @ and a domain (.)"
   })
   .optional(),
-  account_type: z.enum(['PlayStation", "Steam", "Chatgpt", "Spotify", "Canva", "GamePass']).default('steam'),
+  // ✨ استخدم enum بقيم متطابقة للزرار اللي تعرضها
+account_type: z.enum(['PlayStation', 'Steam', 'Chatgpt', 'Spotify', 'Canva', 'GamePass']).default('Steam'),
   enableFileDelivery: z.boolean().default(false),
   
   file: z
@@ -189,7 +190,7 @@ useEffect(() => {
   const [activeTab, setActiveTab] = useState('details');
   const [accounts, setAccounts] = useState<any[]>([]);
   const [isAddingAccount, setIsAddingAccount] = useState(false);
-  const [accountType, setAccountType] = useState('');
+  const [accountType, setAccountType] = useState(null);
   const [showPassword, setShowPassword] = useState(false);
   const [showEditPassword, setShowEditPassword] = useState(false); 
 const [visiblePasswords, setVisiblePasswords] = useState<Record<string, boolean>>({});
@@ -226,8 +227,8 @@ const { t, language, rtl } = useTranslation();
     resolver: zodResolver(formSchema),
     mode: 'onChange',
     defaultValues: {
-      twoFAType: 'totp',  // Default value for 2FA type
-      platform: 'steam', // Default platform
+      account_type: 'Steam', // Default account type
+      twoFAType: 'totp',  // Default value for 2FA typ // Default platform
       emailProvider: '', // Default empty email provider
     },
   });
@@ -409,6 +410,7 @@ const handleFormSubmit = async (values: z.infer<typeof formSchema>) => {
 };
 // إضافة أو تحديث المنتج، مع رفع أو حذف الملف حسب الحالة
 const onSubmit = async (values: z.infer<typeof formSchema>, skipNavigation: boolean = false) => {
+    console.log("VALUES SENT TO SUPABASE:", values);
   try {
     const storeId = localStorage.getItem('store_id');
     const productId = id; // إذا كنت تعدل منتج موجود
@@ -432,7 +434,10 @@ const onSubmit = async (values: z.infer<typeof formSchema>, skipNavigation: bool
       uploadedFileUrl = null; // امسح المتغير قبل الحفظ
       form.setValue('fileUrl', null);
     }
-
+    if (!values.account_type) {
+      toast.error("حدد نوع الحساب!");
+      return;
+    }
     // (3) تحديث منتج موجود
     if (productId) {
       const { error } = await supabase
@@ -503,6 +508,7 @@ const onSubmit = async (values: z.infer<typeof formSchema>, skipNavigation: bool
           two_fa_type: values.twoFAType,
           email_provider: values.emailProvider,
           two_fa_email_sender: values.email,
+          account_type: values.account_type,
         }])
         .select();
 
@@ -575,15 +581,6 @@ function getDirectFileUrl(fileUrl: string | null) {
           toast.error(t('Email and password are required'));
           return;
         }
-      }
-  
-      if (newAccount.twoFASecret && !isGiftCard && form.watch('twoFAEnabled')) {
-        setAccountToValidate({
-          ...newAccount,
-          users: [],
-        });
-        setValidating2FA(true);
-        return;
       }
   
       await saveAccount({
@@ -724,6 +721,21 @@ const handleEditAccount = async (accountId: string, updatedData: any) => {
     console.error("Error updating account:", err);
     toast.error("Failed to update account");
   }
+};
+const handleDeleteAccount = async (accountId: string) => {
+  const confirmed = window.confirm("هل أنت متأكد من حذف الحساب؟");
+  if (!confirmed) return;
+  const { error } = await supabase
+    .from('accounts')
+    .delete()
+    .eq('id', accountId);
+
+  if (error) {
+    toast.error("حدث خطأ أثناء حذف الحساب: " + error.message);
+    return;
+  }
+  setAccounts((prev) => prev.filter((acc) => acc.id !== accountId));
+  toast.success("تم حذف الحساب بنجاح");
 };
 async function checkOutOfStockAlert(productId: string, storeId: string, productName: string) {
   const { data: accounts, error: fetchError } = await supabase
@@ -1093,6 +1105,8 @@ appPassword: account.appPassword || account.fa_app_pass || '',
       twoFALimit: null,
       customReply: '',
       isPaused: false,
+      twoFAType: 'totp',
+      platform: 'steam',
       isGiftCard: false
     };
   }
@@ -2200,19 +2214,6 @@ return (
       </Tabs>
 
       {/* ─────────────── Dialogs ─────────────── */}
-      <TwoFactorValidation
-        isOpen={validating2FA}
-        onClose={() => {
-          setValidating2FA(false);
-          setAccountToValidate(null);
-        }}
-        onValidate={async (isValid) => {
-          if (isValid && accountToValidate) await saveAccount(accountToValidate);
-          setValidating2FA(false);
-          setAccountToValidate(null);
-        }}
-  secret={accountToValidate?.twoFASecret || ""}
-      />
 
       {selectedAccount && (
         <UserManagementDialog

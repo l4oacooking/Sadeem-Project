@@ -44,6 +44,7 @@ function App() {
               <Route path="/supportlogin" element={<Supportlogin />} />
               <Route path="/index" element={<Index />} />
               <Route path="/support" element={<Support />} />
+              <Route path="/supportlogin" element={<Supportlogin />} />
 <Route
  path="/dashboard" 
  element={

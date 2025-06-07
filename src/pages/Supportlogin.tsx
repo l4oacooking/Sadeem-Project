@@ -4,7 +4,7 @@ import { FaRegStar, FaEnvelope, FaWhatsapp, FaPhone } from "react-icons/fa";
 
 const SUPPORT_WHATSAPP = "966550379037"; // رقم الواتساب بدون "+"
 const SUPPORT_EMAIL = "support@sadeem.com";
-const SUPPORT_PHONE = "05XXXXXXXX";
+const SUPPORT_PHONE = "0550379037"; // رقم الهاتف بدون "+" أو أي رموز أخرى
 
 const Support: React.FC = () => (
   <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-[#102046] via-[#1d294e] to-[#0a101d]">

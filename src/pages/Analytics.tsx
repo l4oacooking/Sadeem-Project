@@ -7,10 +7,14 @@ import { useToast } from '@/hooks/use-toast';
 import { BarChart3, TrendingUp, Users } from 'lucide-react';
 import { useTranslation } from '@/hooks/use-translation';
 import { useNavigate } from 'react-router-dom';
+import { createClient } from '@supabase/supabase-js';
 
 // ثم داخل الكومبوننت:
 
-
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY
+);
 // Function to check if using demo account
 const isDemoAccount = () => {
   const storeId = localStorage.getItem('store_id');
@@ -41,11 +45,7 @@ const demoChartData = [
 
 // Data fetching function - will use demo data only for demo accounts
 const getAnalyticsData = async (isAdmin: boolean) => {
-  // Simulate API call
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  
   if (isDemoAccount()) {
-    // Return demo data for demo accounts
     return {
       weeklyData: demoChartData,
       stats: {
@@ -54,17 +54,89 @@ const getAnalyticsData = async (isAdmin: boolean) => {
       }
     };
   }
-  
-  // Return empty data for real accounts until connected to backend
+
+  const storeId = localStorage.getItem('store_id');
+
+  // جلب المنتجات للمستخدم أو لكل المتاجر إذا هو سوبرأدمين
+  let totalProducts = 0;
+  let activeUsers = 0;
+  let weeklyData = [...emptyChartData];
+
+  // المنتجات
+  if (isAdmin) {
+    // سوبرأدمين: كل المنتجات في كل المتاجر
+    const { count: productsCount } = await supabase
+      .from('products')
+      .select('id', { count: 'exact', head: true });
+
+    totalProducts = productsCount || 0;
+  } else {
+    // صاحب متجر: المنتجات الخاصة بمتجره فقط
+    const { count: productsCount } = await supabase
+      .from('products')
+      .select('id', { count: 'exact', head: true })
+      .eq('store_id', storeId);
+
+    totalProducts = productsCount || 0;
+  }
+
+  // المستخدمين النشطين (نحسب المستخدمين المميزين في logs آخر 7 أيام)
+  let logsQuery = supabase
+    .from('logs')
+    .select('user_phone', { count: 'exact' });
+
+  if (!isAdmin) {
+    logsQuery = logsQuery.eq('store_id', storeId);
+  }
+
+  // Logs الأسبوع
+  const weekAgo = new Date();
+  weekAgo.setDate(weekAgo.getDate() - 7);
+
+  logsQuery = logsQuery.gte('created_at', weekAgo.toISOString());
+
+  const { data: logRows, error: logsError } = await logsQuery;
+
+  // عدد المستخدمين الفريدين
+  if (logRows && Array.isArray(logRows)) {
+    const usersSet = new Set(logRows.map(l => l.user_phone));
+    activeUsers = usersSet.size;
+  }
+
+  // **جلب احصائيات claims/accounts لكل يوم (مثال مبسط)**
+  // تفترض أن لديك حقل created_at في logs
+  const { data: logs } = await supabase
+    .from('logs')
+    .select('created_at, user_phone')
+    .gte('created_at', weekAgo.toISOString());
+
+  if (logs && Array.isArray(logs)) {
+    // تجميع باليوم (Sun, Mon...)
+    const daysMap = {
+      0: 'Sun', 1: 'Mon', 2: 'Tue', 3: 'Wed', 4: 'Thu', 5: 'Fri', 6: 'Sat'
+    };
+    let chart = { Sun: { accounts: 0, users: new Set() }, Mon: { accounts: 0, users: new Set() }, Tue: { accounts: 0, users: new Set() }, Wed: { accounts: 0, users: new Set() }, Thu: { accounts: 0, users: new Set() }, Fri: { accounts: 0, users: new Set() }, Sat: { accounts: 0, users: new Set() } };
+    logs.forEach(log => {
+      const day = daysMap[new Date(log.created_at).getDay()];
+      chart[day].accounts += 1;
+      chart[day].users.add(log.user_phone);
+    });
+
+    weeklyData = Object.entries(chart).map(([day, v]: any) => ({
+      day,
+      accounts: v.accounts,
+      users: v.users.size,
+    }));
+  }
+
   return {
-    weeklyData: emptyChartData,
+    weeklyData,
     stats: {
-      totalProducts: 0,
-      activeUsers: 0,
+      totalProducts,
+      activeUsers,
     }
   };
 };
-
 type AnalyticsProps = {
   isAdmin?: boolean;
 };

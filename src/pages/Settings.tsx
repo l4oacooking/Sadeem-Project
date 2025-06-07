@@ -201,6 +201,26 @@ const Settings = ({ isAdmin = false }: SettingsProps) => {
       }
     }
   };
+  async function handleChangePassword(email, currentPassword, newPassword) {
+  // 1. تحقق من الباسورد الحالي (reauthenticate)
+  const { error: loginError } = await supabase.auth.signInWithPassword({
+    email,
+    password: currentPassword,
+  });
+  if (loginError) {
+    // كلمة المرور الحالية خطأ
+    return { success: false, message: "Current password is incorrect." };
+  }
+
+  // 2. لو صح، غير الباسورد
+  const { error: updateError } = await supabase.auth.updateUser({
+    password: newPassword,
+  });
+  if (updateError) {
+    return { success: false, message: updateError.message };
+  }
+  return { success: true, message: "Password updated successfully." };
+}
   // Security form
   const securityForm = useForm<z.infer<typeof securityFormSchema>>({
     resolver: zodResolver(securityFormSchema),
@@ -211,37 +231,27 @@ const Settings = ({ isAdmin = false }: SettingsProps) => {
     },
   });
 
-  const onSecuritySubmit = async (data: z.infer<typeof securityFormSchema>) => {
-  const storeId = localStorage.getItem("store_id");
-  if (!storeId) {
+const onSecuritySubmit = async (data: z.infer<typeof securityFormSchema>) => {
+  // 1. Get the current user's email from Supabase Auth
+  const { data: { user } } = await supabase.auth.getUser();
+  const email = user?.email;
+
+  if (!email) {
     toast({
       title: "Error",
-      description: "Store ID not found. Please login again.",
+      description: "Could not determine your email. Please login again.",
       variant: "destructive",
     });
     return;
   }
 
-  // 1️⃣ Fetch hashed password from DB
-  const { data: admin, error: fetchError } = await supabase
-    .from("admins")
-    .select("password")
-    .eq("store_id", storeId)
-    .eq("role", "owner")
-    .single();
+  // 2. Re-authenticate by signing in again
+  const { error: signInError } = await supabase.auth.signInWithPassword({
+    email,
+    password: data.currentPassword,
+  });
 
-  if (fetchError || !admin) {
-    toast({
-      title: "Error",
-      description: "Failed to verify your current password.",
-      variant: "destructive",
-    });
-    return;
-  }
-
-  // 2️⃣ Compare entered current password with hashed one
-  const passwordMatch = await bcrypt.compare(data.currentPassword, admin.password);
-  if (!passwordMatch) {
+  if (signInError) {
     toast({
       title: "Incorrect Password",
       description: "The current password you entered is incorrect.",
@@ -250,19 +260,15 @@ const Settings = ({ isAdmin = false }: SettingsProps) => {
     return;
   }
 
-  // 3️⃣ Hash the new password before saving
-  const hashedPassword = await bcrypt.hash(data.newPassword, 10);
-
-  const { error: updateError } = await supabase
-    .from("admins")
-    .update({ password: hashedPassword })
-    .eq("store_id", storeId)
-    .eq("role", "owner");
+  // 3. Update password using Supabase Auth
+  const { error: updateError } = await supabase.auth.updateUser({
+    password: data.newPassword,
+  });
 
   if (updateError) {
     toast({
       title: "Error",
-      description: "Failed to update password. Please try again.",
+      description: "Failed to update password in Supabase Auth.",
       variant: "destructive",
     });
     return;
