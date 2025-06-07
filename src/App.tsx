@@ -23,6 +23,8 @@ import Supportlogin from "./pages/Supportlogin";
 import ProtectedRoute from "./components/ProtectedRoute";
 import Support from './pages/Support'; // 👈 new import
 import SadeemLanding from './pages/SadeemLanding';
+import PrivacyPolicy from './pages/PrivacyPolicy'; // 👈 new import
+import FAQ from './pages/faq'; // 👈 new import
 const queryClient = new QueryClient();
 
 
@@ -42,9 +44,12 @@ function App() {
               <Route path="/" element={<SadeemLanding />} />
               <Route path="/login" element={<Login />} />
               <Route path="/supportlogin" element={<Supportlogin />} />
-              <Route path="/index" element={<Index />} />
+              <Route path="/index" element={<SadeemLanding />} />
               <Route path="/support" element={<Support />} />
               <Route path="/supportlogin" element={<Supportlogin />} />
+              <Route path="/privacy" element={<PrivacyPolicy />} />
+              <Route path="/faq" element={<FAQ />} />
+
 <Route
  path="/dashboard" 
  element={
