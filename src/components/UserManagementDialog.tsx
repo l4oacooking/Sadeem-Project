@@ -22,11 +22,12 @@ import { Trash2, RefreshCw, RefreshCcw,  Phone, Clock, User, AlertTriangle, Eras
 import { supabase } from '../supabaseClient'; // Ensure this import is at the top
 
 interface User {
-  number: string;
-  timestamp: string;
-  code_claimed: number;
-  timestamp_code: string;
-  account_assigned: string;
+  phone: string; // رقم المستخدم أو المعرف (966xxxx@c.us)
+  timestamp?: number; // أول مطالبة كعدد millis
+  readable_timestamp?: string; // أول مطالبة كنص (2025/06/11:05:59:14)
+  code_claimed?: number; // عدد الأكواد اللي طالبها
+  timestamp_code_claimed?: number; // آخر وقت مطالبة كعدد millis
+  readable_timestamp_code_claimed?: string; // آخر وقت مطالبة كنص
 }
 
 interface UserManagementDialogProps {
@@ -162,65 +163,63 @@ export default function UserManagementDialog({
           </div>
 
           <div className="border rounded-md overflow-hidden">
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-[#1a1b1e]">
-                  <TableHead className="text-gray-400">
-                    <div className="flex items-center gap-1">
-                      <Phone className="h-4 w-4" />
-                      {t('Phone Number')}
-                    </div>
-                  </TableHead>
-                  <TableHead className="text-gray-400">
-                    <div className="flex items-center gap-1">
-                      <Clock className="h-4 w-4" />
-                      {t('First Claim Time')}
-                    </div>
-                  </TableHead>
-                  <TableHead className="text-gray-400">{t('Codes Claimed')}</TableHead>
-                  <TableHead className="text-gray-400">{t('Last Claim Time')}</TableHead>
-                  <TableHead className="text-right text-gray-400">{t('Actions')}</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {users.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={5} className="text-center py-10 text-gray-400">
-                      {t('No users have claimed codes from this account yet')}
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  users.map((user, index) => (
-                    <TableRow key={`${user.number}-${index}`} className="border-t border-border/40">
-                      <TableCell className="font-medium">{user.number}</TableCell>
-                      <TableCell>{formatDate(user.timestamp)}</TableCell>
-                      <TableCell className="text-center">{user.code_claimed}</TableCell>
-                      <TableCell>{formatDate(user.timestamp_code)}</TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex justify-end gap-2">
-                          <Button 
-                            variant="outline" 
-                            size="icon"
-                            onClick={() => onResetUserTwoFALimit(accountId, user.number)}
-                            title={t('Reset 2FA Limit')}
-                          >
-                            <RefreshCw className="h-4 w-4 text-blue-400" />
-                          </Button>
-                          <Button 
-                            variant="outline" 
-                            size="icon"
-                            onClick={() => onDeleteUser(accountId, user.number)}
-                            title={t('Delete User')}
-                          >
-                            <Trash2 className="h-4 w-4 text-destructive" />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
+<Table>
+  <TableHeader>
+    <TableRow>
+      <TableHead>رقم المستخدم</TableHead>
+      <TableHead>تاريخ أول مطالبة</TableHead>
+      <TableHead>عدد الأكواد المطلوبة</TableHead>
+      <TableHead>تاريخ آخر مطالبة كود</TableHead>
+      <TableHead>إجراءات</TableHead>
+    </TableRow>
+  </TableHeader>
+  <TableBody>
+    {users.map((user) => {
+      // استخراج رقم الجوال بشكل أوضح
+      let displayPhone = user.phone || user.phone || "-";
+      if (displayPhone.endsWith("@c.us")) {
+        let raw = displayPhone.replace("@c.us", "");
+        if (raw.startsWith("966")) {
+          raw = "0" + raw.slice(3);
+        }
+        displayPhone = raw;
+      }
+
+      // أول مطالبة
+      let firstClaim = "-";
+      if (user.readable_timestamp) {
+        firstClaim = user.readable_timestamp;
+      } else if (user.timestamp) {
+        firstClaim = new Date(user.timestamp).toLocaleString("en-GB");
+      }
+
+      // عدد الأكواد المطلوبة
+      const codeClaimed = user.code_claimed || 0;
+
+      // آخر مطالبة كود
+      let lastClaim = "-";
+      if (user.readable_timestamp_code_claimed) {
+        lastClaim = user.readable_timestamp_code_claimed;
+      } else if (user.timestamp_code_claimed) {
+        lastClaim = new Date(user.timestamp_code_claimed).toLocaleString("en-GB");
+      }
+
+      return (
+        <TableRow key={user.phone || user.phone}>
+          <TableCell>{displayPhone}</TableCell>
+          <TableCell>{firstClaim}</TableCell>
+          <TableCell>{codeClaimed}</TableCell>
+          <TableCell>{lastClaim}</TableCell>
+          <TableCell>
+            <Button variant="outline" size="sm">
+              Reset
+            </Button>
+          </TableCell>
+        </TableRow>
+      );
+    })}
+  </TableBody>
+</Table>
           </div>
         </div>
 
